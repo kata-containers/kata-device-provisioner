@@ -1,0 +1,8 @@
+# Configuration file with rules for the actionlint tool.
+#
+# GitHub-hosted labels that are missing from the hard-coded list in the
+# actionlint release we pin.
+self-hosted-runner:
+  labels:
+    - ubuntu-26.04
+    - ubuntu-26.04-arm
