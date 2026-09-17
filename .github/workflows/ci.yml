@@ -33,7 +33,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
           filters: |
@@ -63,7 +63,7 @@ jobs:
       # explicit toolchain and will not pick that file up on its own.
       - name: Install Rust toolchain
         run: rustup show
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo test --locked --verbose -- --include-ignored
 
   # Check code formatting against Rust style guidelines.
@@ -104,7 +104,7 @@ jobs:
       # explicit toolchain and will not pick that file up on its own.
       - name: Install Rust toolchain
         run: rustup show
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo clippy --locked --all-targets -- -D warnings
 
   # Ensure documentation builds cleanly.
@@ -121,7 +121,7 @@ jobs:
       # explicit toolchain and will not pick that file up on its own.
       - name: Install Rust toolchain
         run: rustup show
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo doc --locked --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
@@ -140,7 +140,7 @@ jobs:
       # explicit toolchain and will not pick that file up on its own.
       - name: Install Rust toolchain
         run: rustup show
-      - uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
+      - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2.87.10
         with:
           tool: cargo-audit
       - run: cargo audit
@@ -157,7 +157,7 @@ jobs:
           persist-credentials: false
       - name: Install Rust toolchain
         run: rustup show
-      - uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
+      - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2.87.10
         with:
           tool: cargo-deny
       - run: cargo deny check
@@ -174,8 +174,8 @@ jobs:
           persist-credentials: false
       - name: Install nightly toolchain
         run: rustup toolchain install nightly --profile minimal --no-self-update
-      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
-      - uses: taiki-e/install-action@41049aa56687c35e0afa74eed4f09cec4f9afabf # v2.85.2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2.87.10
         with:
           tool: cargo-udeps
       # +nightly outranks rust-toolchain.toml; udeps needs nightly-only -Z flags.
