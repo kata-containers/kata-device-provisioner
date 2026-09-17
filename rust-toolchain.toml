@@ -1,0 +1,6 @@
+# One pinned compiler for CI, image builds, and local work.  Bump in its
+# own commit and keep the Dockerfile base image on the same version.
+[toolchain]
+channel = "1.95.0"
+profile = "minimal"
+components = ["rustfmt", "clippy"]

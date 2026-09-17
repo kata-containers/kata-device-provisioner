@@ -1,0 +1,29 @@
+[package]
+name = "kata-device-provisioner"
+version = "0.1.0"
+edition = "2021"
+description = "Sets CC mode and VFIO binding on Kata GPU nodes, then exits"
+authors = ["The Kata Containers community <kata-dev@lists.katacontainers.io>"]
+repository = "https://github.com/kata-containers/kata-device-provisioner"
+homepage = "https://katacontainers.io/"
+readme = "README.md"
+license = "Apache-2.0"
+keywords = ["kata", "gpu", "vfio", "confidential-computing"]
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+# chroot(2) before exec'ing the host's modprobe, as kata-deploy does.
+libc = "0.2"
+# PCI/VFIO sysfs truth, shared with kata-device-plugin so the two cannot
+# disagree about what a device is. `cc` adds in-band CC mode over BAR0 and the
+# FSP mailbox, needing no NVIDIA kernel driver.
+#
+# f6831fa is the merge of in-band CC / PPCIE onto pcilibs-rs main.
+pcilibs-rs = { git = "https://github.com/kata-containers/pcilibs-rs", rev = "f6831fa878ec315ab477ccb88fbf8ec6cbd4cdca", features = ["cc"] }
+
+[dev-dependencies]
+# The fake sysfs trees the library's own tests use.
+pcilibs-rs = { git = "https://github.com/kata-containers/pcilibs-rs", rev = "f6831fa878ec315ab477ccb88fbf8ec6cbd4cdca", features = ["cc", "testfs"] }
+rstest = "0.26.1"
+tempfile = "3"
