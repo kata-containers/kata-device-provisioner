@@ -25,5 +25,5 @@ pcilibs-rs = { git = "https://github.com/kata-containers/pcilibs-rs", rev = "f68
 [dev-dependencies]
 # The fake sysfs trees the library's own tests use.
 pcilibs-rs = { git = "https://github.com/kata-containers/pcilibs-rs", rev = "f6831fa878ec315ab477ccb88fbf8ec6cbd4cdca", features = ["cc", "testfs"] }
-rstest = "0.26.1"
+rstest = "0.27.0"
 tempfile = "3"
