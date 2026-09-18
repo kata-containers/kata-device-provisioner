@@ -10,6 +10,7 @@ they ask for — and are otherwise the chart's defaults.
 | [`HGX-Hx00-PPCIE`](HGX-Hx00-PPCIE.values.yaml) | HGX Hx00 | `ppcie`, whole board |
 | [`HGX-Bx00`](HGX-Bx00.values.yaml) | HGX Bx00 (B200, B300) | `off` |
 | [`HGX-Bx00-CC`](HGX-Bx00-CC.values.yaml) | HGX Bx00 | `on` — single-GPU and multi-GPU |
+| [`PCIE-GPU`](PCIE-GPU.values.yaml) | discrete cards, no NVSwitch | `off` |
 
 Profiles are per chip generation, not per SKU: `HGX-Hx00` matches any GH100
 board (an H100, H200, H800 or H20 baseboard looks the same from PCI config
@@ -20,7 +21,7 @@ builds it, so nothing here selects on that either.
 
 GH200 and GB200/GB300 fall inside those same chip families but are explicitly
 excluded from both — their CC mode is owned by system firmware, so a
-`ppcie`/`cc` run would only reach that refusal after selecting the node.
+`PPCIE`/`CC` run would only reach that refusal after selecting the node.
 They need a profile of their own, once one exists.
 
 ```sh
@@ -101,9 +102,8 @@ Four fields decide everything:
   participant. `out-of-scope` devices are listed and never touched.
 - **device id and NVSwitches** — a GH100 id (`2330`, ...) plus an NVSwitch is
   HGX Hx00; a GB100/GB110 id (`2901`, ...) plus an NVSwitch is HGX Bx00;
-  NVIDIA GPUs and no NVSwitch is a node with add-in cards. A GH200 or
-  GB200/GB300 id is neither: those chips sit inside the same families but are
-  deliberately excluded — see below.
+  NVIDIA GPUs and no NVSwitch is a PCIE-GPU node. A GH200 or GB200/GB300 id
+  is none of these: those chips are excluded from all three — see below.
 - **`iommu_group`** — every device you intend to pass through needs one. If
   these are missing the IOMMU is off, and `apply` will refuse the node.
 
@@ -169,7 +169,12 @@ hardware and refuses a mode the board cannot take.
 Both rules carve the C2C ids back out of their range (`pcilibs_rs::cc::
 C2C_DEVIDS`): GH200 out of Hopper, GB200 and GB300 out of Blackwell. Their CC
 mode is owned by system firmware and cannot be raised in-band, so leaving them
-in would mean a `ppcie`/`cc` run selects the node only to have the binary
-refuse it. Excluding them here means that refusal never happens — `--mode off`
-still finds and binds a GH200 or GB200/GB300 node, just not through these two
-labels.
+in would mean `HGX-Hx00-PPCIE` or `HGX-Bx00-CC` selects the node only to have
+the binary refuse it. Excluding them here means that refusal never happens —
+`--mode off` still finds and binds a GH200 or GB200/GB300 node, just not
+through these two labels.
+
+`nvidia-c2c` names the same ids outright, for `PCIE-GPU`: its base match,
+`nvidia-gpu`, is not range-restricted the way the generation labels are, so a
+bare GH200 or GB200/GB300 would otherwise pass its "no NVSwitch" test, and a
+superchip is not an add-in card. `PCIE-GPU` excludes it explicitly.

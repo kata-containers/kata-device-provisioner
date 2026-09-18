@@ -1,0 +1,31 @@
+# PCIE-GPU: discrete cards bound for passthrough, confidential computing left
+# off.
+#
+# Selects nodes that have an NVIDIA GPU and no NVSwitch — add-in cards rather
+# than an SXM baseboard. Each card is bound to vfio-pci and its CC mode is not
+# raised, so a generation too old for CC is provisioned by this profile just
+# as well as a Hopper or Blackwell card.
+#
+#   helm install kata-device-provisioner deploy/helm/kata-device-provisioner \
+#     --namespace kata-system --create-namespace \
+#     -f deploy/helm/kata-device-provisioner/profiles/PCIE-GPU.values.yaml
+
+profiles:
+  PCIE-GPU:
+    enabled: true
+    ccMode: "off"
+
+    nodeFeatureRule:
+      enabled: true
+
+    nodeSelector:
+      kata.feature.node.kubernetes.io/nvidia-gpu: "true"
+
+    # Absence is the whole point of this profile, and a nodeSelector map cannot
+    # say it: without these, HGX baseboards and Grace superchips match here too.
+    nodeSelectorExpressions:
+      - "!kata.feature.node.kubernetes.io/nvidia-nvswitch"
+      - "!kata.feature.node.kubernetes.io/nvidia-c2c"
+
+    job:
+      parallelism: 10
