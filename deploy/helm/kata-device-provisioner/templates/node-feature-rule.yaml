@@ -15,20 +15,20 @@ already tracks, since NFD sees only what sysfs reports, not the chip name that
 range decodes to.
 
 GH200 and GB200/GB300 sit inside those same ranges but are deliberately carved
-back out (see `pcilibs_rs::cc::C2C_DEVIDS`). Their CC mode is owned by system
-firmware and cannot be set in-band, so a `ppcie`/`cc` run would select one of
-these nodes only to have the binary refuse it. Excluding them from the label
-avoids that: `nvidia-hopper`/`nvidia-blackwell` simply never select the node.
-`--mode off` still finds and binds them, just not through these two labels —
-they need a profile of their own once one exists. A range this tree does not
-know about yet means a node is missed, not mislabelled.
+back out (see `pcilibs_rs::cc::C2C_DEVIDS`). A Grace superchip is a different
+machine from an HGX baseboard: its GPUs are coherently attached over
+NVLink-C2C, so they need `nvgrace_gpu_vfio_pci`, and CC needs support from the
+CPU as well as the GPU, which Grace has not got. They therefore take a profile
+of their own rather than the baseboard ones. A range this tree does not know
+about yet means a node is missed, not mislabelled.
 
-nvidia-c2c names those same ids outright, for the PCIE-GPU profiles: their base
-match is `nvidia-gpu`, which is not range-restricted the way
-nvidia-hopper/blackwell are, so a bare GH200 or GB200/GB300 (no NVSwitch
-either) would otherwise pass their "add-in card" selector and hit the same
-refusal. Exactly `pcilibs_rs::cc::C2C_DEVIDS`, not a range: there is no
-chip-generation range to carve it out of here.
+nvidia-c2c names those same ids outright — exactly `pcilibs_rs::cc::C2C_DEVIDS`,
+not a range, there being no chip-generation range to carve it out of here — so
+the PCIE-GPU profiles can exclude them: their base match is `nvidia-gpu`, which
+is not range-restricted the way nvidia-hopper/blackwell are, and a superchip
+has no NVSwitch either, so one would otherwise pass their "add-in card"
+selector. nvidia-grace-blackwell is the GB200/GB300 half of that list on its
+own, which is what the GBx00 profile selects. GH200 has no profile yet.
 
 Cluster-scoped with no node-specific content, so the release owns it and
 `helm uninstall` takes it away.
@@ -95,8 +95,19 @@ spec:
             vendor: { op: In, value: ["10de"] }
             class: { op: In, value: ["0302"] }
             # pcilibs_rs::cc::C2C_DEVIDS, verbatim. Coherently attached over
-            # NVLink-C2C: CC is system firmware's, and vfio-pci cannot map
-            # its memory (nvgrace_gpu_vfio_pci is the driver that can).
+            # NVLink-C2C: vfio-pci cannot map their memory, and their CPU has
+            # no CC of its own (nvgrace_gpu_vfio_pci is the driver that can).
             # GH200: 2342/2343/2345/2348. GB200: 2941/297e/29bc. GB300: 31c2.
             device: { op: In, value: ["2342", "2343", "2345", "2348", "2941", "297e", "29bc", "31c2"] }
+    - name: "nvidia.grace-blackwell"
+      labels:
+        "kata.feature.node.kubernetes.io/nvidia-grace-blackwell": "true"
+      matchFeatures:
+        - feature: pci.device
+          matchExpressions:
+            vendor: { op: In, value: ["10de"] }
+            class: { op: In, value: ["0302"] }
+            # The GB200/GB300 half of C2C_DEVIDS, so GBx00 can select those
+            # without taking GH200 with them.
+            device: { op: In, value: ["2941", "297e", "29bc", "31c2"] }
 {{- end }}
