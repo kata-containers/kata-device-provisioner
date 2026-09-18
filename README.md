@@ -65,7 +65,7 @@ see [ARCHITECTURE.md](ARCHITECTURE.md).
 ## What it does not do
 
 - It is not a controller. There is no reconcile loop, no watch, no CRD.
-  A mode change is an explicit run, not a label edit picked up by a daemon.
+  A mode change is a `helm upgrade`, not a label edit picked up by a daemon.
 - It does not run in the workload cluster's steady state. Privileged
   containers exist only while a node is being provisioned.
 - It does not talk to Kubernetes. No client, no RBAC, no ServiceAccount token —
@@ -77,10 +77,7 @@ see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Running it
 
-The binary acts on the node it runs on. Cluster-wide fan-out — one privileged,
-token-free Job per node via
-[`k8s-job-dispatcher`](https://github.com/kata-containers/k8s-job-dispatcher) —
-is the intended deployment model, but that chart is not in this tree yet.
+The binary acts on the node it runs on.
 
 ```sh
 cargo build --release
@@ -104,6 +101,50 @@ The node needs an IOMMU enabled on the kernel command line and `kmod`
 installed; `vfio-pci` is loaded for you on the first run, using the host's own
 `modprobe`.
 
+## Deploying it
+
+Cluster-wide fan-out is one privileged, token-free Job per node via
+[`k8s-job-dispatcher`](https://github.com/kata-containers/k8s-job-dispatcher):
+
+```sh
+helm install kata-device-provisioner deploy/helm/kata-device-provisioner \
+  --namespace kata-system --create-namespace \
+  --set ccMode=on \
+  --set 'job.nodes={gpu-node-1}'
+```
+
+`job.nodes` names nodes outright, which is the quick way to try one machine.
+Drop it and set `nodeSelector` to provision a fleet — an empty one selects every
+node in the cluster, so select deliberately.
+[`profiles/`](deploy/helm/kata-device-provisioner/profiles/README.md) has ready
+-made values for HGX Hx00 and HGX Bx00 boards and for discrete PCIe cards, and
+shows how to read a node before choosing between them.
+
+A node can ask for a different mode with the label the GPU Operator already
+uses, for the modes the release enables:
+
+```sh
+helm upgrade ... --set 'ccModeOverrides={ppcie}'
+kubectl label node gpu-node-2 nvidia.com/cc.mode=ppcie
+```
+
+Each enabled mode gets a dispatcher run of its own, and `ccMode` covers the
+rest. The label is read when a rollout starts, so editing it takes effect on the
+next `helm upgrade` — nothing watches it.
+
+`helm uninstall` removes the boot configuration and releases the devices; it
+leaves CC mode alone, because reverting it costs a GPU reset per device.
+
+The per-node Jobs are privileged and share the host's PID namespace, so on a
+cluster that enforces Pod Security the namespace needs to allow it:
+
+```sh
+kubectl label namespace kata-system pod-security.kubernetes.io/enforce=privileged
+```
+
+See [`values.yaml`](deploy/helm/kata-device-provisioner/values.yaml) for the
+rest.
+
 ## Status
 
 Early, but the pipeline runs end to end. Every stage is implemented and tested
@@ -114,7 +155,7 @@ On an HGX H100 board: discovery, `cc=on` across all eight GPUs, and `ppcie` over
 the GPUs and all four NVSwitches, each verified by re-reading the hardware, with
 the mode and the binding surviving a cold reboot.
 
-On a GH200: multi-domain PCI, refusal to set a mode system firmware owns, BAR0
+On a GH200: multi-domain PCI, refusal to raise a mode the Grace CPU cannot back, BAR0
 on a coherent GPU, and `nvgrace_gpu_vfio_pci` resolved from the alias table and
 re-bound across a cold boot by the generated udev rule — see
 [ARCHITECTURE.md](ARCHITECTURE.md#variant-drivers-need-a-udev-rule-instead).

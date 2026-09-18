@@ -1,0 +1,139 @@
+# The CC mode to put the selected nodes into: off | on | devtools | ppcie.
+#
+# Unquoted `on`, `off`, `yes` and `no` are YAML 1.1 booleans and arrive here as
+# true/false; they are read as on/off, so both spellings work.
+ccMode: "on"
+
+# Modes individual nodes may ask for by label, overriding `ccMode`:
+#
+#   kubectl label node gpu-node-1 nvidia.com/cc.mode=ppcie
+#
+# List only the modes you actually use. Each one renders a dispatcher run of its
+# own, selecting the nodes labelled with it, and `ccMode` then covers everything
+# else. The label is read once when a rollout starts — editing it does nothing
+# until the next `helm upgrade`, which is what keeps a node's configuration
+# reproducible from the release rather than from label history.
+#
+# Cannot be combined with `job.nodes`, which decides node-to-mode outright.
+ccModeOverrides: []
+
+image:
+  # Supports reference:tag and reference@sha256:digest.
+  reference: ghcr.io/kata-containers/kata-device-provisioner
+  tag: "0.1.0"
+
+imagePullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# The label a node asks for a mode with (input, see `ccModeOverrides`), and the
+# one the dispatcher writes once the hardware actually reached it (output). Both
+# keep the names the GPU Operator publishes, because kata-deploy's RuntimeClass
+# selectors and the existing NVIDIA documentation already key off them.
+ccModeLabel: nvidia.com/cc.mode
+ccModeStateLabel: nvidia.com/cc.mode.state
+# Mirrors what cc.mode.state means for readiness (anything but off), for
+# selectors written against the GPU Operator's convention rather than ours.
+ccModeReadyLabel: nvidia.com/cc.ready.state
+
+# Which nodes get provisioned. Equality matches only, compiled into one label
+# selector the dispatcher lists nodes with; `job.nodes` overrides it entirely.
+#
+# Leaving this empty selects EVERY node in the cluster, which on a mixed fleet
+# means nodes with no GPU. Those runs fail loudly rather than doing nothing, so
+# select deliberately — for example:
+#   nodeSelector:
+#     feature.node.kubernetes.io/pci-0302_10de.present: "true"
+#
+# Prefer node-feature-discovery's `pci-*` labels over the GPU Operator's
+# `nvidia.com/gpu.*` ones: those come from the NVIDIA driver, which a
+# provisioned node deliberately does not run, so they vanish exactly when you
+# would want to select on them. The PCI labels are read from config space and
+# survive VFIO binding. See profiles/README.md.
+nodeSelector: {}
+
+# Requirements `nodeSelector` cannot express, appended verbatim to the same
+# selector. Set operations and, most usefully, absence:
+#   nodeSelectorExpressions:
+#     - "!kata.feature.node.kubernetes.io/nvidia-nvswitch"    # not an HGX board
+nodeSelectorExpressions: []
+
+# SELinux process context for the privileged per-node Jobs. On an enforcing
+# node the runtime would otherwise assign MCS categories; host paths this Job
+# writes (/etc/modprobe.d, /sys) are s0, so those writes fail unless the
+# process is s0 as well. spc_t is the container-selinux domain for privileged
+# containers (the same one OpenShift's privileged SCC uses).
+#
+# Nodes with SELinux off ignore seLinuxOptions, so it is safe to set across a
+# mixed cluster. The dispatcher is an API client with no host mounts and is
+# left unconfined by this.
+#
+# Off by default: it is a cluster policy choice, and a type the node does not
+# have would keep the Job from starting.
+selinux:
+  enabled: false
+
+nodeFeatureRule:
+  # Ask node-feature-discovery to label nodes by what PCI hardware they have, so
+  # the profiles in profiles/ can select an HGX Hx00 or Bx00 board and not a
+  # node with discrete cards. Needs NFD in the cluster — kata-deploy can
+  # install it — and is off by default because a chart should not assume a CRD
+  # it does not own.
+  enabled: false
+
+# Added to the per-node Jobs. They are placed by name, so this only matters for
+# NoExecute taints, which evict even an already-bound pod.
+tolerations: []
+
+podLabels: {}
+podAnnotations: {}
+priorityClassName: ""
+
+resources: {}
+
+job:
+  # The dispatcher enumerates the selected nodes and creates one node-pinned Job
+  # per node, pacing them and labelling the nodes that succeed. It is the only
+  # pod in this release that talks to the Kubernetes API; the per-node Jobs that
+  # touch the hardware carry no token at all.
+  dispatcherImage:
+    reference: ghcr.io/kata-containers/k8s-job-dispatcher
+    tag: "0.4.0"
+
+  # Name the nodes outright, bypassing `nodeSelector`. This is the quick way to
+  # try a single machine:
+  #   --set 'job.nodes={gpu-node-1}'
+  nodes: []
+
+  # How many nodes are provisioned at once. Deliberately low: a CC mode change
+  # resets the GPU, so this paces how much of the fleet loses its accelerators
+  # at the same time. Raise it once you trust the rollout.
+  parallelism: 10
+
+  # A failed run is not retried. Every stage is idempotent, but a failure here
+  # means the node was refused (busy GPU, no IOMMU, host driver loaded) or the
+  # hardware disagreed with what was written — none of which a retry fixes, and
+  # all of which are worth a human reading the log.
+  backoffLimit: 0
+
+  # Must be at least 60: the dispatcher polls each per-node Job for its result,
+  # and a Job garbage-collected before the next poll leaves its node looking
+  # like a failure.
+  ttlSecondsAfterFinished: 300
+
+  # A GPU reset plus a firmware round trip, per device. Generous, but finite:
+  # the dispatcher waits for every node it dispatched to.
+  activeDeadlineSeconds: 1800
+
+  # How long to keep re-checking for eligible nodes before giving up. Useful
+  # when the labels selected on are written by node-feature-discovery, which may
+  # still be labelling when this runs. Ignored when `job.nodes` is set.
+  waitForNodesSeconds: 0
+  nodeSettleSeconds: 15
+
+  # How long to wait for a node to come back Ready after its Job succeeded.
+  waitNodeReadySeconds: 300
+
+  # Where the dispatcher pods run — unrelated to which nodes get provisioned.
+  # Worth setting: the dispatcher is the only pod here holding a token.
+  dispatcherNodeSelector: {}
+  dispatcherTolerations: []

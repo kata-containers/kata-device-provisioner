@@ -1,0 +1,22 @@
+apiVersion: v2
+name: kata-device-provisioner
+description: Puts a node's passthrough GPUs into a CC mode and binds them to vfio-pci
+type: application
+
+# Chart version. Bump on any change to the chart itself.
+version: "0.1.0"
+
+# Version of kata-device-provisioner this chart deploys by default.
+appVersion: "0.1.0"
+
+keywords:
+  - kata
+  - gpu
+  - vfio
+  - confidential-computing
+home: https://katacontainers.io/
+sources:
+  - https://github.com/kata-containers/kata-device-provisioner
+maintainers:
+  - name: The Kata Containers community
+    email: kata-dev@lists.katacontainers.io

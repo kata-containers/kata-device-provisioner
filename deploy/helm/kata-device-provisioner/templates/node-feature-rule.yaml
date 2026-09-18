@@ -1,0 +1,113 @@
+{{- /*
+Labels the profiles select on.
+
+node-feature-discovery labels PCI classes 03, 0b40 and 12 out of the box, which
+covers the GPUs but not the NVSwitches: they are class 0680 (bridge, other), and
+their presence is exactly what makes a node an SXM baseboard rather than a bag
+of cards. A NodeFeatureRule sees every PCI device regardless of that whitelist.
+
+nvidia-gpu / nvidia-nvswitch are vendor+class, the same two fields the DEVICES
+table keys on. nvidia-hopper / nvidia-blackwell are the chip generation the
+first profiles name — H100, H200, H800 and H20 are all GH100; B200 and B300
+are GB100 and GB110 — so one profile per generation covers every SKU in it,
+matched as a hex-string prefix on the device-id ranges `pcilibs_rs::cc::CHIPS`
+already tracks, since NFD sees only what sysfs reports, not the chip name that
+range decodes to.
+
+GH200 and GB200/GB300 sit inside those same ranges but are deliberately carved
+back out (see `pcilibs_rs::cc::C2C_DEVIDS`). A Grace superchip is a different
+machine from an HGX baseboard: its GPUs are coherently attached over
+NVLink-C2C, so they need `nvgrace_gpu_vfio_pci`, and CC needs support from the
+CPU as well as the GPU, which Grace has not got. They therefore take a profile
+of their own rather than the baseboard ones. A range this tree does not know
+about yet means a node is missed, not mislabelled.
+
+nvidia-c2c names those same ids outright — exactly `pcilibs_rs::cc::C2C_DEVIDS`,
+not a range, there being no chip-generation range to carve it out of here — so
+the PCIE-GPU profiles can exclude them: their base match is `nvidia-gpu`, which
+is not range-restricted the way nvidia-hopper/blackwell are, and a superchip
+has no NVSwitch either, so one would otherwise pass their "add-in card"
+selector. nvidia-grace-blackwell is the GB200/GB300 half of that list on its
+own, which is what the GBx00 profile selects. GH200 has no profile yet.
+
+Cluster-scoped with no node-specific content, so the release owns it and
+`helm uninstall` takes it away.
+*/ -}}
+{{- if .Values.nodeFeatureRule.enabled }}
+apiVersion: nfd.k8s-sigs.io/v1alpha1
+kind: NodeFeatureRule
+metadata:
+  name: {{ .Chart.Name }}
+  labels:
+{{- include "kata-device-provisioner.labels" . | nindent 4 }}
+spec:
+  rules:
+    - name: "nvidia.gpu"
+      labels:
+        "kata.feature.node.kubernetes.io/nvidia-gpu": "true"
+      matchFeatures:
+        - feature: pci.device
+          matchExpressions:
+            vendor: { op: In, value: ["10de"] }
+            class: { op: In, value: ["0302"] }
+    - name: "nvidia.nvswitch"
+      labels:
+        "kata.feature.node.kubernetes.io/nvidia-nvswitch": "true"
+      matchFeatures:
+        - feature: pci.device
+          matchExpressions:
+            vendor: { op: In, value: ["10de"] }
+            class: { op: In, value: ["0680"] }
+    - name: "nvidia.hopper"
+      labels:
+        "kata.feature.node.kubernetes.io/nvidia-hopper": "true"
+      matchFeatures:
+        - feature: pci.device
+          matchExpressions:
+            vendor: { op: In, value: ["10de"] }
+            class: { op: In, value: ["0302"] }
+            # GH100: devid 0x22f0-0x237f (pcilibs_rs::cc::CHIPS), minus
+            # 0x2340-0x234f, which holds every GH200 id C2C_DEVIDS lists
+            # (0x2342/0x2343/0x2345/0x2348) plus a few unassigned ids either
+            # side of them.
+            device: { op: InRegexp, value: ["^22f[0-9a-f]$", "^23[0-3][0-9a-f]$", "^23[5-7][0-9a-f]$"] }
+    - name: "nvidia.blackwell"
+      labels:
+        "kata.feature.node.kubernetes.io/nvidia-blackwell": "true"
+      matchFeatures:
+        - feature: pci.device
+          matchExpressions:
+            vendor: { op: In, value: ["10de"] }
+            class: { op: In, value: ["0302"] }
+            # GB100: devid 0x2900-0x297f (pcilibs_rs::cc::CHIPS), minus
+            # 0x2941-0x297f, which holds the two GB200 ids C2C_DEVIDS lists
+            # (0x2941, 0x297e) plus a handful of unassigned ids past them.
+            # GB110: devid 0x3180-0x31ff, minus 0x31c0-0x31cf, which holds the
+            # GB300 id C2C_DEVIDS lists (0x31c2). GB102/GB112/GB20x are
+            # workstation dies, not HGX baseboards, and excluded entirely.
+            device: { op: InRegexp, value: ["^29[0-3][0-9a-f]$", "^2940$", "^31[89ab][0-9a-f]$", "^31[def][0-9a-f]$"] }
+    - name: "nvidia.c2c"
+      labels:
+        "kata.feature.node.kubernetes.io/nvidia-c2c": "true"
+      matchFeatures:
+        - feature: pci.device
+          matchExpressions:
+            vendor: { op: In, value: ["10de"] }
+            class: { op: In, value: ["0302"] }
+            # pcilibs_rs::cc::C2C_DEVIDS, verbatim. Coherently attached over
+            # NVLink-C2C: vfio-pci cannot map their memory, and their CPU has
+            # no CC of its own (nvgrace_gpu_vfio_pci is the driver that can).
+            # GH200: 2342/2343/2345/2348. GB200: 2941/297e/29bc. GB300: 31c2.
+            device: { op: In, value: ["2342", "2343", "2345", "2348", "2941", "297e", "29bc", "31c2"] }
+    - name: "nvidia.grace-blackwell"
+      labels:
+        "kata.feature.node.kubernetes.io/nvidia-grace-blackwell": "true"
+      matchFeatures:
+        - feature: pci.device
+          matchExpressions:
+            vendor: { op: In, value: ["10de"] }
+            class: { op: In, value: ["0302"] }
+            # The GB200/GB300 half of C2C_DEVIDS, so GBx00 can select those
+            # without taking GH200 with them.
+            device: { op: In, value: ["2941", "297e", "29bc", "31c2"] }
+{{- end }}
