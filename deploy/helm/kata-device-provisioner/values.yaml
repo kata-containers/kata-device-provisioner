@@ -59,9 +59,10 @@ nodeSelectorExpressions: []
 
 nodeFeatureRule:
   # Ask node-feature-discovery to label nodes by what PCI hardware they have, so
-  # the profiles in profiles/ can select an HGX Hx00 board and not a node with
-  # discrete cards. Needs NFD in the cluster — kata-deploy can install it — and
-  # is off by default because a chart should not assume a CRD it does not own.
+  # the profiles in profiles/ can select an HGX Hx00 or Bx00 board and not a
+  # node with discrete cards. Needs NFD in the cluster — kata-deploy can
+  # install it — and is off by default because a chart should not assume a CRD
+  # it does not own.
   enabled: false
 
 # Added to the per-node Jobs. They are placed by name, so this only matters for

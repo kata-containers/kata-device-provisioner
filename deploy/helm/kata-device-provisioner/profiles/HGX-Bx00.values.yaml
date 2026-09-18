@@ -1,0 +1,26 @@
+# HGX Bx00: SXM boards bound for passthrough, confidential computing left off.
+#
+# Selects Blackwell HGX nodes (Blackwell device ids plus an NVSwitch) — B200,
+# B300, and any other GB100/GB110 board. Each GPU and NVSwitch is bound to
+# vfio-pci. CC mode is not raised. Discrete cards, other generations, and
+# GB200/GB300 Grace-Blackwell (superchips, whose GPUs need
+# `nvgrace_gpu_vfio_pci`) are out of scope.
+#
+#   helm install kata-device-provisioner deploy/helm/kata-device-provisioner \
+#     --namespace kata-system --create-namespace \
+#     -f deploy/helm/kata-device-provisioner/profiles/HGX-Bx00.values.yaml
+
+ccMode: "off"
+
+nodeFeatureRule:
+  enabled: true
+
+nodeSelector:
+  kata.feature.node.kubernetes.io/nvidia-blackwell: "true"
+  kata.feature.node.kubernetes.io/nvidia-nvswitch: "true"
+
+job:
+  # A mode change resets the GPUs, so this paces how much of the fleet loses
+  # accelerators at once. Raise it once you trust the rollout.
+  parallelism: 2
+  activeDeadlineSeconds: 3600
