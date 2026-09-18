@@ -67,6 +67,21 @@ imagePullSecrets: []
 selinux:
   enabled: false
 
+# SELinux process context for the privileged per-node Jobs. On an enforcing
+# node the runtime would otherwise assign MCS categories; host paths this Job
+# writes (/etc/modprobe.d, /sys) are s0, so those writes fail unless the
+# process is s0 as well. spc_t is the container-selinux domain for privileged
+# containers (the same one OpenShift's privileged SCC uses).
+#
+# Nodes with SELinux off ignore seLinuxOptions, so it is safe to set across a
+# mixed cluster. The dispatcher is an API client with no host mounts and is
+# left unconfined by this.
+#
+# Off by default: it is a cluster policy choice, and a type the node does not
+# have would keep the Job from starting.
+selinux:
+  enabled: false
+
 nodeFeatureRule:
   # Ask node-feature-discovery to label nodes by what PCI hardware they have, so
   # the profiles in profiles/ can select an HGX Hx00 or Bx00 board and not a

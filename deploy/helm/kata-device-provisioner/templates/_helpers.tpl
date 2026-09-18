@@ -178,6 +178,37 @@ Image references. Both accept reference:tag and reference@sha256:digest.
 {{- end -}}
 
 {{/*
+Whether the per-node Jobs pin a SELinux process context. Empty when off, so
+call sites read as `if include "kata-device-provisioner.selinuxEnabled" . | trim`.
+*/}}
+{{- define "kata-device-provisioner.selinuxEnabled" -}}
+{{- if (.Values.selinux | default dict).enabled -}}
+true
+{{- end -}}
+{{- end -}}
+
+{{/*
+The seLinuxOptions block for one container, or nothing when confinement is off.
+
+level: s0 is pinned rather than left to the runtime, which would hand the
+container per-pod MCS categories. Every host path this Job writes
+(/etc/modprobe.d, /etc/modules-load.d, /sys) is s0.
+
+Arguments (dict):
+  root   - the top-level context (.)
+  domain - the SELinux type, e.g. spc_t
+
+Emitted at column 0; indent with `nindent` at the call site.
+*/}}
+{{- define "kata-device-provisioner.seLinuxOptions" -}}
+{{- if and (include "kata-device-provisioner.selinuxEnabled" .root | trim) .domain -}}
+seLinuxOptions:
+  type: {{ .domain }}
+  level: s0
+{{- end -}}
+{{- end -}}
+
+{{/*
 `nodeSelector` as the label selector the dispatcher lists nodes with, plus the
 run's own `extra` requirement. Empty means every node, which the dispatcher
 takes as "no filter".
@@ -297,6 +328,10 @@ spec:
                    has to be writable. Nothing here is a subset worth naming. */}}
             privileged: true
             readOnlyRootFilesystem: true
+{{- $seLinux := include "kata-device-provisioner.seLinuxOptions" (dict "root" $root "domain" "spc_t") | trim }}
+{{- if $seLinux }}
+{{- $seLinux | nindent 12 }}
+{{- end }}
 {{- with $root.Values.resources }}
           resources:
 {{- toYaml . | nindent 12 }}
