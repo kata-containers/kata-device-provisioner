@@ -1,0 +1,31 @@
+{{- /*
+The per-node Job manifests, rendered once and mounted by the dispatcher, which
+clones one per selected node with metadata.name and nodeName injected. Constant
+size regardless of how many nodes the release covers, and the chart stays the
+single source of truth for the pod spec: the dispatcher only does fan-out.
+
+One provisioning template per mode in play, because the mode is an argument
+baked into the pod spec rather than something the dispatcher can vary per node.
+
+A normal resource, not a hook, so it exists before the post-install dispatcher
+runs and is still there during the pre-delete one.
+*/ -}}
+{{- define "kata-device-provisioner.jobTemplatesForProfile" -}}
+{{- $modes := include "kata-device-provisioner.allModes" . | splitList "," | compact }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kata-device-provisioner.profileResourceName" (dict "root" . "suffix" "job-templates") }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{- include "kata-device-provisioner.labels" . | nindent 4 }}
+data:
+{{- range $mode := $modes }}
+  provision-job-{{ $mode }}.yaml: |
+{{ include "kata-device-provisioner.perNodeJob" (dict "root" $ "stage" "provision" "ccMode" $mode) | indent 4 }}
+{{- end }}
+  unprovision-job.yaml: |
+{{ include "kata-device-provisioner.perNodeJob" (dict "root" . "stage" "unprovision") | indent 4 }}
+{{- end -}}
+{{ include "kata-device-provisioner.renderProfiles" (dict "root" . "renderer" "kata-device-provisioner.jobTemplatesForProfile") }}

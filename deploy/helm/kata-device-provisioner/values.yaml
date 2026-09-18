@@ -1,0 +1,134 @@
+# Every provisioning and cleanup run belongs to an enabled profile. An empty
+# map renders no dispatchers, per-node Job templates, or their RBAC, which makes
+# it a valid no-op when a parent chart leaves this dependency disabled.
+#
+# profiles:
+#   hopper-amd-ppcie:
+#     enabled: true
+#     ccMode: ppcie
+#     nodeSelector:
+#       feature.node.kubernetes.io/pci-0302_10de.present: "true"
+#     job:
+#       parallelism: 2
+#   blackwell-on:
+#     enabled: true
+#     ccMode: "on"
+#     nodeSelector:
+#       kata.feature.node.kubernetes.io/nvidia-blackwell: "true"
+#
+# The map key is the profile identity; there are no `profile`, `cpuTee`, or
+# nested `values` metadata fields. It is normalized and length-limited for
+# Kubernetes names and labels, and names the profile's instance to the
+# dispatcher, so each one owns only the nodes it provisioned itself. It also
+# gets a unique state label unless it explicitly sets ccModeStateLabel.
+#
+# ccMode is required for every enabled profile: off | on | devtools | ppcie.
+# Bare YAML 1.1 on/off/yes/no booleans are accepted as on/off.
+#
+# Optional profile fields include:
+#   ccModeOverrides: []       # modes requested through ccModeLabel on nodes
+#   ccModeLabel: nvidia.com/cc.mode
+#   ccModeStateLabel: ...     # explicit override of the unique default
+#   ccModeReadyLabel: nvidia.com/cc.ready.state
+#   nodeSelector: {}
+#   nodeSelectorExpressions: []
+#   job:
+#     nodes: []               # names nodes outright, bypassing nodeSelector
+#
+# ccModeOverrides cannot be combined with job.nodes. Prefer NFD's persistent
+# PCI labels over NVIDIA driver labels, which disappear after VFIO binding.
+profiles: {}
+
+# Install NFD for standalone deployments. Parent charts such as KRAB that own a
+# shared NFD release disable this nested dependency.
+node-feature-discovery:
+  enabled: true
+
+image:
+  # Supports reference:tag and reference@sha256:digest.
+  reference: ghcr.io/kata-containers/kata-device-provisioner
+  tag: "0.1.0"
+
+imagePullPolicy: IfNotPresent
+imagePullSecrets: []
+
+# SELinux process context for the privileged per-node Jobs. On an enforcing
+# node the runtime would otherwise assign MCS categories; host paths this Job
+# writes (/etc/modprobe.d, /sys) are s0, so those writes fail unless the
+# process is s0 as well. spc_t is the container-selinux domain for privileged
+# containers (the same one OpenShift's privileged SCC uses).
+#
+# Nodes with SELinux off ignore seLinuxOptions, so it is safe to set across a
+# mixed cluster. The dispatcher is an API client with no host mounts and is
+# left unconfined by this.
+#
+# Off by default: it is a cluster policy choice, and a type the node does not
+# have would keep the Job from starting.
+selinux:
+  enabled: false
+
+nodeFeatureRule:
+  # Ask node-feature-discovery to label nodes by what PCI hardware they have —
+  # vendor, class, and whatever chip generation or SKU a profile needs to
+  # select on. Needs NFD in the cluster — kata-deploy can install it — and is
+  # off by default because a chart should not assume a CRD it does not own.
+  enabled: false
+
+# Added to the per-node Jobs. They are placed by name, so this only matters for
+# NoExecute taints, which evict even an already-bound pod.
+tolerations: []
+
+podLabels: {}
+podAnnotations: {}
+priorityClassName: ""
+
+resources: {}
+
+job:
+  # The dispatcher enumerates the selected nodes and creates one node-pinned Job
+  # per node, pacing them and labelling the nodes that succeed. It is the only
+  # pod in this release that talks to the Kubernetes API; the per-node Jobs that
+  # touch the hardware carry no token at all.
+  dispatcherImage:
+    reference: ghcr.io/kata-containers/k8s-job-dispatcher
+    tag: "0.4.0"
+
+  # How many nodes are provisioned at once. Deliberately low: a CC mode change
+  # resets the GPU, so this paces how much of the fleet loses its accelerators
+  # at the same time. Raise it once you trust the rollout.
+  parallelism: 10
+
+  # A failed run is not retried. Every stage is idempotent, but a failure here
+  # means the node was refused (busy GPU, no IOMMU, host driver loaded) or the
+  # hardware disagreed with what was written — none of which a retry fixes, and
+  # all of which are worth a human reading the log.
+  backoffLimit: 0
+
+  # Must be at least 60: the dispatcher polls each per-node Job for its result,
+  # and a Job garbage-collected before the next poll leaves its node looking
+  # like a failure.
+  ttlSecondsAfterFinished: 300
+
+  # A GPU reset plus a firmware round trip, per device. Generous, but finite:
+  # the dispatcher waits for every node it dispatched to.
+  activeDeadlineSeconds: 1800
+
+  # How long to keep re-checking for eligible nodes before giving up. The labels
+  # the profiles select on are written by node-feature-discovery, which this
+  # chart starts alongside the dispatcher, so the first look often finds nothing.
+  #
+  # Leave this non-zero. At 0 the dispatcher resolves once and an empty result is
+  # a silent no-op — and a run that selected nothing reads every node it already
+  # owns as one that left the selection, so it unprovisions them. Any non-zero
+  # value turns an empty selection into a failed run instead, before a node is
+  # touched. Ignored when `job.nodes` is set.
+  waitForNodesSeconds: 300
+  nodeSettleSeconds: 15
+
+  # How long to wait for a node to come back Ready after its Job succeeded.
+  waitNodeReadySeconds: 300
+
+  # Where the dispatcher pods run — unrelated to which nodes get provisioned.
+  # Worth setting: the dispatcher is the only pod here holding a token.
+  dispatcherNodeSelector: {}
+  dispatcherTolerations: []
