@@ -9,6 +9,7 @@ they ask for — and are otherwise the chart's defaults.
 | [`HGX-Hx00`](HGX-Hx00.values.yaml) | HGX Hx00 (H100, H200, H800, H20) | `off` |
 | [`HGX-Hx00-PPCIE`](HGX-Hx00-PPCIE.values.yaml) | HGX Hx00 | `ppcie`, whole board |
 | [`HGX-Bx00`](HGX-Bx00.values.yaml) | HGX Bx00 (B200, B300) | `off` |
+| [`HGX-Bx00-CC`](HGX-Bx00-CC.values.yaml) | HGX Bx00 | `on` — single-GPU and multi-GPU |
 
 Profiles are per chip generation, not per SKU: `HGX-Hx00` matches any GH100
 board (an H100, H200, H800 or H20 baseboard looks the same from PCI config
