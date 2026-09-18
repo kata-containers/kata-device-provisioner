@@ -1,0 +1,29 @@
+# HGX Hx00: SXM boards bound for passthrough, confidential computing left off.
+#
+# Selects Hopper HGX nodes (Hopper device ids plus an NVSwitch) — H100, H200,
+# H800, H20, and any other GH100 board. Each GPU and NVSwitch is bound to
+# vfio-pci. CC mode is not raised, and Protected PCIe is not enabled. Discrete
+# cards, other generations, and GH200 (a Grace superchip, whose GPUs need
+# `nvgrace_gpu_vfio_pci`) are out of scope.
+#
+#   helm install kata-device-provisioner deploy/helm/kata-device-provisioner \
+#     --namespace kata-system --create-namespace \
+#     -f deploy/helm/kata-device-provisioner/profiles/HGX-Hx00.values.yaml
+
+profiles:
+  HGX-Hx00:
+    enabled: true
+    ccMode: "off"
+
+    nodeFeatureRule:
+      enabled: true
+
+    nodeSelector:
+      kata.feature.node.kubernetes.io/nvidia-hopper: "true"
+      kata.feature.node.kubernetes.io/nvidia-nvswitch: "true"
+
+    job:
+      # A mode change resets the GPUs, so this paces how much of the fleet loses
+      # accelerators at once. Raise it once you trust the rollout.
+      parallelism: 2
+      activeDeadlineSeconds: 3600
