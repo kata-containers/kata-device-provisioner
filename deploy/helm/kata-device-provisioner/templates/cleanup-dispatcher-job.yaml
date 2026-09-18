@@ -1,0 +1,99 @@
+{{- /*
+The mirror image of the provisioning dispatcher, as a pre-delete hook: one
+node-pinned Job per node that removes the modprobe configuration and releases the
+devices, then the node label that said this ran.
+
+Node selection here is not the provisioning selection. Uninstall has to reach
+every node this release ever provisioned, including ones that no longer match
+`nodeSelector` or have since been tainted, so it selects on the presence of the
+result label instead — whatever its value.
+
+CC mode is deliberately left as it is: reverting it costs a reset per GPU, and
+"stop managing this node" is no reason to reset its hardware. Put the fleet back
+with `ccMode: "off"` before uninstalling if that is what you want.
+
+This runs while the release's ServiceAccount, RBAC and job-templates ConfigMap
+still exist: they are torn down only after pre-delete hooks complete.
+*/ -}}
+{{- define "kata-device-provisioner.cleanupDispatcherForProfile" -}}
+{{- $dispatcherName := include "kata-device-provisioner.profileResourceName" (dict "root" . "suffix" "unprovision-dispatcher") }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $dispatcherName }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{- include "kata-device-provisioner.labels" . | nindent 4 }}
+    kata-device-provisioner/dispatcher: unprovision
+  annotations:
+    "helm.sh/hook": pre-delete
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 0
+  ttlSecondsAfterFinished: {{ .Values.job.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+{{- include "kata-device-provisioner.labels" . | nindent 8 }}
+        kata-device-provisioner/dispatcher: unprovision
+    spec:
+{{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+{{- toYaml . | nindent 8 }}
+{{- end }}
+      serviceAccountName: {{ include "kata-device-provisioner.dispatcherServiceAccountName" . }}
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+{{- with include "kata-device-provisioner.dispatcherPlacement" . | trim }}
+{{- . | nindent 6 }}
+{{- end }}
+{{- with .Values.priorityClassName }}
+      priorityClassName: {{ . | quote }}
+{{- end }}
+      containers:
+        - name: dispatcher
+          image: {{ include "kata-device-provisioner.dispatcherImage" . }}
+          imagePullPolicy: {{ .Values.imagePullPolicy }}
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          command:
+            - /usr/bin/k8s-job-dispatcher
+            - "--job-template=/etc/kata-device-job/unprovision-job.yaml"
+            - "--name-prefix={{ include "kata-device-provisioner.profileJobPrefix" (dict "root" . "profilePrefix" "ku") }}"
+{{- include "kata-device-provisioner.dispatcherCommonFlags" (dict "root" . "dispatcherName" $dispatcherName) | nindent 12 }}
+            - "--remove-node-label"
+            - "--extra-node-label={{ .Values.ccModeReadyLabel }}=false"
+            # A bare key selects on presence, so this covers every node the
+            # provisioning run ever labelled, whatever mode it left them in.
+            - "--node-selector={{ .Values.ccModeStateLabel }}"
+            # The per-node Jobs are pinned by name and tolerate everything, so
+            # the dispatcher's scheduler-equivalent taint check would only skip
+            # nodes it can in fact reach.
+            - "--ignore-node-taints"
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          volumeMounts:
+            - name: job-templates
+              mountPath: /etc/kata-device-job
+              readOnly: true
+      volumes:
+        - name: job-templates
+          configMap:
+            name: {{ include "kata-device-provisioner.profileResourceName" (dict "root" . "suffix" "job-templates") }}
+{{- end -}}
+{{ include "kata-device-provisioner.renderProfiles" (dict "root" . "renderer" "kata-device-provisioner.cleanupDispatcherForProfile") }}

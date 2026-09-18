@@ -1,0 +1,132 @@
+{{- /*
+The provisioning run, or runs.
+
+Each is one small Job that lists its nodes live and creates a node-pinned Job
+per node, keeping at most job.parallelism in flight and labelling each node once
+its Job has succeeded. The release stays O(1) whatever the fleet size, and
+`helm upgrade` re-runs them: every stage is idempotent, so already-provisioned
+nodes come out untouched and newly added ones get picked up.
+
+Labelling is the dispatcher's and not a stage of the run, which is what lets the
+privileged pods run with no token.
+
+There is one run per mode, because the mode is baked into the per-node Job:
+`ccMode` covers the fleet, and every mode listed in `ccModeOverrides` gets a run
+of its own selecting the nodes labelled with it. The default run then excludes
+those nodes with a `notin` requirement, which — unlike an equality match — also
+matches nodes carrying no override label at all.
+*/ -}}
+{{- define "kata-device-provisioner.dispatchersForProfile" -}}
+{{- $overrides := include "kata-device-provisioner.overrideModes" . | splitList "," | compact }}
+{{- $runs := list }}
+{{- $default := "" }}
+{{- if $overrides }}
+{{- $default = printf "%s notin (%s)" .Values.ccModeLabel (join "," $overrides) }}
+{{- end }}
+{{- $runs = append $runs (dict "ccMode" (include "kata-device-provisioner.ccMode" .) "extra" $default "suffix" "") }}
+{{- range $mode := $overrides }}
+{{- $runs = append $runs (dict "ccMode" $mode "extra" (printf "%s=%s" $.Values.ccModeLabel $mode) "suffix" (printf "-%s" $mode)) }}
+{{- end }}
+{{- range $run := $runs }}
+{{- $dispatcherName := include "kata-device-provisioner.profileResourceName" (dict "root" $ "suffix" (printf "provision%s-dispatcher" $run.suffix)) }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $dispatcherName }}
+  namespace: {{ $.Release.Namespace }}
+  labels:
+{{- include "kata-device-provisioner.labels" $ | nindent 4 }}
+    kata-device-provisioner/dispatcher: provision
+    kata-device-provisioner/cc-mode: {{ $run.ccMode | quote }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  # The dispatcher already retries per node; a dispatcher failure means "a node
+  # failed" and should surface, not be retried blindly.
+  backoffLimit: 0
+  ttlSecondsAfterFinished: {{ $.Values.job.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+{{- include "kata-device-provisioner.labels" $ | nindent 8 }}
+        kata-device-provisioner/dispatcher: provision
+        kata-device-provisioner/cc-mode: {{ $run.ccMode | quote }}
+      annotations:
+        checksum/job-templates: {{ include "kata-device-provisioner.jobTemplatesForProfile" $ | sha256sum }}
+    spec:
+{{- with $.Values.imagePullSecrets }}
+      imagePullSecrets:
+{{- toYaml . | nindent 8 }}
+{{- end }}
+      serviceAccountName: {{ include "kata-device-provisioner.dispatcherServiceAccountName" $ }}
+      restartPolicy: Never
+      # A plain API client that never touches a node. Locked down so a compromise
+      # cannot reach further than its (minimal) API rights.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+{{- with include "kata-device-provisioner.dispatcherPlacement" $ | trim }}
+{{- . | nindent 6 }}
+{{- end }}
+{{- with $.Values.priorityClassName }}
+      priorityClassName: {{ . | quote }}
+{{- end }}
+      containers:
+        - name: dispatcher
+          image: {{ include "kata-device-provisioner.dispatcherImage" $ }}
+          imagePullPolicy: {{ $.Values.imagePullPolicy }}
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          command:
+            - /usr/bin/k8s-job-dispatcher
+            - "--job-template=/etc/kata-device-job/provision-job-{{ $run.ccMode }}.yaml"
+            - "--cleanup-job-template=/etc/kata-device-job/unprovision-job.yaml"
+            # Node names are appended to this, and the result has 63 characters
+            # to fit in; keep the prefix short.
+            - "--name-prefix={{ include "kata-device-provisioner.profileJobPrefix" (dict "root" $ "profilePrefix" "kp") }}{{ $run.suffix }}"
+{{- include "kata-device-provisioner.dispatcherCommonFlags" (dict "root" $ "dispatcherName" $dispatcherName) | nindent 12 }}
+            - "--node-label={{ $run.ccMode }}"
+            - "--extra-node-label={{ $.Values.ccModeReadyLabel }}={{ ne $run.ccMode "off" }}"
+{{- if $.Values.job.nodes }}
+            - "--nodes={{ join "," $.Values.job.nodes }}"
+{{- else }}
+{{- with include "kata-device-provisioner.nodeSelector" (dict "root" $ "extra" $run.extra) }}
+            - "--node-selector={{ . }}"
+{{- end }}
+            # Which nodes are eligible is still moving at install time — NFD may
+            # still be labelling, a new node may still be settling — so let the
+            # dispatcher re-resolve instead of acting on its first snapshot.
+            # Pointless with an explicit node list, which needs no discovery.
+            - "--wait-for-nodes-secs={{ $.Values.job.waitForNodesSeconds }}"
+            - "--node-settle-secs={{ $.Values.job.nodeSettleSeconds }}"
+{{- end }}
+            # A GPU reset can knock a node about briefly, so give it time to
+            # come back Ready before calling the run good.
+            - "--wait-node-ready-secs={{ $.Values.job.waitNodeReadySeconds }}"
+          env:
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          volumeMounts:
+            - name: job-templates
+              mountPath: /etc/kata-device-job
+              readOnly: true
+      volumes:
+        - name: job-templates
+          configMap:
+            name: {{ include "kata-device-provisioner.profileResourceName" (dict "root" $ "suffix" "job-templates") }}
+{{- end }}
+{{- end -}}
+{{ include "kata-device-provisioner.renderProfiles" (dict "root" . "renderer" "kata-device-provisioner.dispatchersForProfile") }}
