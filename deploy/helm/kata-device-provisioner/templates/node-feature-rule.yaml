@@ -23,6 +23,13 @@ avoids that: `nvidia-hopper`/`nvidia-blackwell` simply never select the node.
 they need a profile of their own once one exists. A range this tree does not
 know about yet means a node is missed, not mislabelled.
 
+nvidia-c2c names those same ids outright, for PCIE-GPU: its base match is
+`nvidia-gpu`, which is not range-restricted the way nvidia-hopper/blackwell
+are, so a bare GH200 or GB200/GB300 (no NVSwitch either) would otherwise pass
+its "add-in card" selector, and a superchip is not an add-in card. Exactly
+`pcilibs_rs::cc::C2C_DEVIDS`, not a range: there is no chip-generation range to
+carve it out of here.
+
 Cluster-scoped with no node-specific content, so the release owns it and
 `helm uninstall` takes it away.
 */ -}}
@@ -79,4 +86,17 @@ spec:
             # GB300 id C2C_DEVIDS lists (0x31c2). GB102/GB112/GB20x are
             # workstation dies, not HGX baseboards, and excluded entirely.
             device: { op: InRegexp, value: ["^29[0-3][0-9a-f]$", "^2940$", "^31[89ab][0-9a-f]$", "^31[def][0-9a-f]$"] }
+    - name: "nvidia.c2c"
+      labels:
+        "kata.feature.node.kubernetes.io/nvidia-c2c": "true"
+      matchFeatures:
+        - feature: pci.device
+          matchExpressions:
+            vendor: { op: In, value: ["10de"] }
+            class: { op: In, value: ["0302"] }
+            # pcilibs_rs::cc::C2C_DEVIDS, verbatim. Coherently attached over
+            # NVLink-C2C: CC is system firmware's, and vfio-pci cannot map
+            # its memory (nvgrace_gpu_vfio_pci is the driver that can).
+            # GH200: 2342/2343/2345/2348. GB200: 2941/297e/29bc. GB300: 31c2.
+            device: { op: In, value: ["2342", "2343", "2345", "2348", "2941", "297e", "29bc", "31c2"] }
 {{- end }}

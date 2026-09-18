@@ -117,8 +117,8 @@ helm install kata-device-provisioner deploy/helm/kata-device-provisioner \
 Drop it and set `nodeSelector` to provision a fleet — an empty one selects every
 node in the cluster, so select deliberately.
 [`profiles/`](deploy/helm/kata-device-provisioner/profiles/README.md) has ready
--made values for HGX Hx00 and HGX Bx00 boards, and shows how to read a node
-before choosing between them.
+-made values for HGX Hx00 and HGX Bx00 boards and for discrete PCIe cards, and
+shows how to read a node before choosing between them.
 
 A node can ask for a different mode with the label the GPU Operator already
 uses, for the modes the release enables:
