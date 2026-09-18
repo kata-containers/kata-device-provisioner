@@ -7,6 +7,7 @@ they ask for — and are otherwise the chart's defaults.
 | Profile | Nodes | Mode |
 | --- | --- | --- |
 | [`HGX-Hx00`](HGX-Hx00.values.yaml) | HGX Hx00 (H100, H200, H800, H20) | `off` |
+| [`HGX-Hx00-PPCIE`](HGX-Hx00-PPCIE.values.yaml) | HGX Hx00 | `ppcie`, whole board |
 
 Profiles are per chip generation, not per SKU: `HGX-Hx00` matches any GH100
 board (an H100, H200, H800 or H20 baseboard looks the same from PCI config
