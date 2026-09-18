@@ -1,0 +1,32 @@
+# GBx00: Grace-Blackwell superchips bound for passthrough — GB200 and GB300,
+# the Grace CPU and Blackwell GPU coherently attached over NVLink-C2C, not the
+# HGX Bx00 baseboards.
+#
+# Each GPU and NVSwitch is bound for passthrough. A coherently attached GPU
+# needs `nvgrace_gpu_vfio_pci`, which the binary resolves from the kernel's
+# own module alias table; under plain vfio-pci the GPU would reach a VM with
+# its memory missing, so a kernel whose alias table offers nothing better is
+# refused rather than bound.
+#
+# There is no CC variant of this profile: confidential computing needs the CPU
+# to support it as well as the GPU, and Grace does not, so asking for any mode
+# other than `off` on these nodes is refused.
+#
+#   helm install kata-device-provisioner deploy/helm/kata-device-provisioner \
+#     --namespace kata-system --create-namespace \
+#     -f deploy/helm/kata-device-provisioner/profiles/GBx00.values.yaml
+
+ccMode: "off"
+
+nodeFeatureRule:
+  enabled: true
+
+nodeSelector:
+  kata.feature.node.kubernetes.io/nvidia-grace-blackwell: "true"
+
+job:
+  # Binding takes every accelerator on the node away from the host, so this
+  # paces how much of the fleet is out at once. Raise it once you trust the
+  # rollout.
+  parallelism: 2
+  activeDeadlineSeconds: 3600
