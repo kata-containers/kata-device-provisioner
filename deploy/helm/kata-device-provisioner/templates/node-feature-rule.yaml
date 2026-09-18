@@ -1,0 +1,41 @@
+{{- /*
+Labels the profiles select on.
+
+node-feature-discovery labels PCI classes 03, 0b40 and 12 out of the box, which
+covers the GPUs but not the NVSwitches: they are class 0680 (bridge, other), and
+their presence is exactly what makes a node an SXM baseboard rather than a bag
+of cards. A NodeFeatureRule sees every PCI device regardless of that whitelist.
+
+nvidia-gpu / nvidia-nvswitch are vendor+class, the same two fields the DEVICES
+table keys on. Deliberately structural, not identity: which chip generation or
+SKU a device is comes from rules a specific profile adds alongside itself.
+
+Cluster-scoped with no node-specific content, so the release owns it and
+`helm uninstall` takes it away.
+*/ -}}
+{{- if .Values.nodeFeatureRule.enabled }}
+apiVersion: nfd.k8s-sigs.io/v1alpha1
+kind: NodeFeatureRule
+metadata:
+  name: {{ .Chart.Name }}
+  labels:
+{{- include "kata-device-provisioner.labels" . | nindent 4 }}
+spec:
+  rules:
+    - name: "nvidia.gpu"
+      labels:
+        "kata.feature.node.kubernetes.io/nvidia-gpu": "true"
+      matchFeatures:
+        - feature: pci.device
+          matchExpressions:
+            vendor: { op: In, value: ["10de"] }
+            class: { op: In, value: ["0302"] }
+    - name: "nvidia.nvswitch"
+      labels:
+        "kata.feature.node.kubernetes.io/nvidia-nvswitch": "true"
+      matchFeatures:
+        - feature: pci.device
+          matchExpressions:
+            vendor: { op: In, value: ["10de"] }
+            class: { op: In, value: ["0680"] }
+{{- end }}
