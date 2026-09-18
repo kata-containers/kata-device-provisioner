@@ -12,6 +12,7 @@ they ask for — and are otherwise the chart's defaults.
 | [`HGX-Bx00-CC`](HGX-Bx00-CC.values.yaml) | HGX Bx00 | `on` — single-GPU and multi-GPU |
 | [`PCIE-GPU`](PCIE-GPU.values.yaml) | discrete cards, no NVSwitch | `off` |
 | [`PCIE-GPU-CC`](PCIE-GPU-CC.values.yaml) | discrete cards, no NVSwitch | `on`, per GPU |
+| [`GBx00`](GBx00.values.yaml) | Grace-Blackwell superchips (GB200, GB300) | `off` |
 
 Profiles are per chip generation, not per SKU: `HGX-Hx00` matches any GH100
 board (an H100, H200, H800 or H20 baseboard looks the same from PCI config
@@ -21,9 +22,11 @@ baseboard is the same regardless of which OEM (Supermicro, Lenovo, ...)
 builds it, so nothing here selects on that either.
 
 GH200 and GB200/GB300 fall inside those same chip families but are explicitly
-excluded from both — their CC mode is owned by system firmware, so a
-`PPCIE`/`CC` run would only reach that refusal after selecting the node.
-They need a profile of their own, once one exists.
+excluded from both, because a Grace superchip is a different machine from an
+HGX baseboard: its GPUs are coherently attached and CC needs support from the
+CPU as well, which Grace has not got. GB200/GB300 have [`GBx00`](GBx00.values.yaml)
+instead, which binds for passthrough and leaves CC off. GH200 has no profile
+yet.
 
 ```sh
 helm install kata-device-provisioner deploy/helm/kata-device-provisioner \
@@ -103,8 +106,8 @@ Four fields decide everything:
   participant. `out-of-scope` devices are listed and never touched.
 - **device id and NVSwitches** — a GH100 id (`2330`, ...) plus an NVSwitch is
   HGX Hx00; a GB100/GB110 id (`2901`, ...) plus an NVSwitch is HGX Bx00;
-  NVIDIA GPUs and no NVSwitch is a PCIE-GPU node. A GH200 or GB200/GB300 id
-  is none of these: those chips are excluded from all three — see below.
+  NVIDIA GPUs and no NVSwitch is a PCIE-GPU node. A GB200/GB300 id is GBx00,
+  and a GH200 id is none of these — see below.
 - **`iommu_group`** — every device you intend to pass through needs one. If
   these are missing the IOMMU is off, and `apply` will refuse the node.
 
@@ -168,14 +171,16 @@ about yet means a node is not selected; the provisioner still reads the
 hardware and refuses a mode the board cannot take.
 
 Both rules carve the C2C ids back out of their range (`pcilibs_rs::cc::
-C2C_DEVIDS`): GH200 out of Hopper, GB200 and GB300 out of Blackwell. Their CC
-mode is owned by system firmware and cannot be raised in-band, so leaving them
-in would mean `HGX-Hx00-PPCIE` or `HGX-Bx00-CC` selects the node only to have
-the binary refuse it. Excluding them here means that refusal never happens —
-`--mode off` still finds and binds a GH200 or GB200/GB300 node, just not
-through these two labels.
+C2C_DEVIDS`): GH200 out of Hopper, GB200 and GB300 out of Blackwell. Those are
+Grace superchips, which the baseboard profiles would provision wrongly on two
+counts — a coherently attached GPU needs `nvgrace_gpu_vfio_pci`, and no CC mode
+can be raised on a node whose CPU has no CC of its own.
 
-`nvidia-c2c` names the same ids outright, for the `PCIE-GPU` profiles: their
-base match, `nvidia-gpu`, is not range-restricted the way the generation labels
-are, so a bare GH200 or GB200/GB300 would otherwise pass their "no NVSwitch"
-test and hit the same refusal under `PCIE-GPU-CC`. Both exclude it explicitly.
+`nvidia-c2c` names the same ids outright, so the `PCIE-GPU` profiles can
+exclude them: their base match, `nvidia-gpu`, is not range-restricted the way
+the generation labels are, and a superchip has no NVSwitch either, so one would
+otherwise pass their "add-in card" test.
+
+`nvidia-grace-blackwell` is the GB200/GB300 half of that same list, which is
+what `GBx00` selects. GH200 has no equivalent label, because nothing selects on
+it yet.
