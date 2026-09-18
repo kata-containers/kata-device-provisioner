@@ -1,0 +1,34 @@
+# HGX Hx00: the whole board to one confidential VM, via Protected PCIe.
+#
+# Selects Hopper HGX nodes (Hopper device ids plus an NVSwitch) — H100, H200,
+# H800, H20, and any other GH100 board. GPUs and NVSwitches are claimed
+# together so one CVM gets the baseboard with NVLink intact. That board serves
+# one tenant at a time; per-GPU CC is off, because firmware makes it mutually
+# exclusive with PPCIE. A board in PPCIE reporting cc.mode.state=off is
+# correct. Discrete cards, other generations, and GH200 (a Grace superchip,
+# which cannot take PPCIE either) are out of scope.
+#
+# NVIDIA documents the mode:
+# https://docs.nvidia.com/datacenter/cloud-native/confidential-containers/latest/configure-cc-mode.html
+#
+#   helm install kata-device-provisioner deploy/helm/kata-device-provisioner \
+#     --namespace kata-system --create-namespace \
+#     -f deploy/helm/kata-device-provisioner/profiles/HGX-Hx00-PPCIE.values.yaml
+
+profiles:
+  HGX-Hx00-PPCIE:
+    enabled: true
+    ccMode: ppcie
+
+    nodeFeatureRule:
+      enabled: true
+
+    nodeSelector:
+      kata.feature.node.kubernetes.io/nvidia-hopper: "true"
+      kata.feature.node.kubernetes.io/nvidia-nvswitch: "true"
+
+    job:
+      # A mode change resets the GPUs, so this paces how much of the fleet loses
+      # accelerators at once. Raise it once you trust the rollout.
+      parallelism: 2
+      activeDeadlineSeconds: 3600
