@@ -7,8 +7,20 @@ their presence is exactly what makes a node an SXM baseboard rather than a bag
 of cards. A NodeFeatureRule sees every PCI device regardless of that whitelist.
 
 nvidia-gpu / nvidia-nvswitch are vendor+class, the same two fields the DEVICES
-table keys on. Deliberately structural, not identity: which chip generation or
-SKU a device is comes from rules a specific profile adds alongside itself.
+table keys on. nvidia-hopper is the chip generation the first profile names —
+H100, H200, H800 and H20 are all GH100 — so one profile covers every SKU in
+it, matched as a hex-string prefix on the device-id range
+`pcilibs_rs::cc::CHIPS` already tracks, since NFD sees only what sysfs reports,
+not the chip name that range decodes to.
+
+GH200 sits inside that same range but is deliberately carved back out (see
+`pcilibs_rs::cc::C2C_DEVIDS`). Its CC mode is owned by system firmware and
+cannot be set in-band, so a `ppcie` run would select the node only to have the
+binary refuse it. Excluding it from the label avoids that: `nvidia-hopper`
+simply never selects the node. `--mode off` still finds and binds a GH200,
+just not through this label — it needs a profile of its own once one exists.
+A range this tree does not know about yet means a node is missed, not
+mislabelled.
 
 Cluster-scoped with no node-specific content, so the release owns it and
 `helm uninstall` takes it away.
@@ -38,4 +50,17 @@ spec:
           matchExpressions:
             vendor: { op: In, value: ["10de"] }
             class: { op: In, value: ["0680"] }
+    - name: "nvidia.hopper"
+      labels:
+        "kata.feature.node.kubernetes.io/nvidia-hopper": "true"
+      matchFeatures:
+        - feature: pci.device
+          matchExpressions:
+            vendor: { op: In, value: ["10de"] }
+            class: { op: In, value: ["0302"] }
+            # GH100: devid 0x22f0-0x237f (pcilibs_rs::cc::CHIPS), minus
+            # 0x2340-0x234f, which holds every GH200 id C2C_DEVIDS lists
+            # (0x2342/0x2343/0x2345/0x2348) plus a few unassigned ids either
+            # side of them.
+            device: { op: InRegexp, value: ["^22f[0-9a-f]$", "^23[0-3][0-9a-f]$", "^23[5-7][0-9a-f]$"] }
 {{- end }}
