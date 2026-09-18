@@ -8,17 +8,19 @@ they ask for — and are otherwise the chart's defaults.
 | --- | --- | --- |
 | [`HGX-Hx00`](HGX-Hx00.values.yaml) | HGX Hx00 (H100, H200, H800, H20) | `off` |
 | [`HGX-Hx00-PPCIE`](HGX-Hx00-PPCIE.values.yaml) | HGX Hx00 | `ppcie`, whole board |
+| [`HGX-Bx00`](HGX-Bx00.values.yaml) | HGX Bx00 (B200, B300) | `off` |
 
 Profiles are per chip generation, not per SKU: `HGX-Hx00` matches any GH100
 board (an H100, H200, H800 or H20 baseboard looks the same from PCI config
-space), so one release covers a fleet mixing them without a profile per part
-number. The baseboard is the same regardless of which OEM (Supermicro,
-Lenovo, ...) builds it, so nothing here selects on that either.
+space) and `HGX-Bx00` matches any GB100/GB110 board (B200 or B300), so one
+release covers a fleet mixing them without a profile per part number. The
+baseboard is the same regardless of which OEM (Supermicro, Lenovo, ...)
+builds it, so nothing here selects on that either.
 
-GH200 falls inside that same chip family but is explicitly excluded — its CC
-mode is owned by system firmware, so a `ppcie` run would only reach that
-refusal after selecting the node. It needs a profile of its own, once one
-exists.
+GH200 and GB200/GB300 fall inside those same chip families but are explicitly
+excluded from both — their CC mode is owned by system firmware, so a
+`ppcie`/`cc` run would only reach that refusal after selecting the node.
+They need a profile of their own, once one exists.
 
 ```sh
 helm install kata-device-provisioner deploy/helm/kata-device-provisioner \
@@ -97,9 +99,10 @@ Four fields decide everything:
   through, but it has no CC mode of its own. Under PPCIE the same device is a
   participant. `out-of-scope` devices are listed and never touched.
 - **device id and NVSwitches** — a GH100 id (`2330`, ...) plus an NVSwitch is
-  HGX Hx00; NVIDIA GPUs and no NVSwitch is a node with add-in cards. A GH200
-  id is neither: it sits inside the same family but is deliberately excluded
-  — see below.
+  HGX Hx00; a GB100/GB110 id (`2901`, ...) plus an NVSwitch is HGX Bx00;
+  NVIDIA GPUs and no NVSwitch is a node with add-in cards. A GH200 or
+  GB200/GB300 id is neither: those chips sit inside the same families but are
+  deliberately excluded — see below.
 - **`iommu_group`** — every device you intend to pass through needs one. If
   these are missing the IOMMU is off, and `apply` will refuse the node.
 
@@ -154,16 +157,18 @@ config space via node-feature-discovery, so they survive binding. The chart
 ships the NodeFeatureRule that produces them (`nodeFeatureRule.enabled`); NFD
 itself has to be in the cluster already, which kata-deploy can arrange.
 
-`nvidia-gpu` and `nvidia-nvswitch` are vendor and PCI class. `nvidia-hopper` is
-a chip generation, matched on the device-id range `pcilibs_rs::cc`'s `CHIPS`
-table already tracks (GH100), rather than one id per SKU, so a fleet mixing
-H100 and H200 is one release. A generation this tree does not know about yet
-means a node is not selected; the provisioner still reads the hardware and
-refuses a mode the board cannot take.
+`nvidia-gpu` and `nvidia-nvswitch` are vendor and PCI class. `nvidia-hopper` and
+`nvidia-blackwell` are chip generations, matched on the device-id ranges
+`pcilibs_rs::cc`'s `CHIPS` table already tracks (GH100 for Hopper, GB100 and
+GB110 for Blackwell) rather than one id per SKU, so a fleet mixing H100 and
+H200, or B200 and B300, is one release. A generation this tree does not know
+about yet means a node is not selected; the provisioner still reads the
+hardware and refuses a mode the board cannot take.
 
-The rule carves the C2C ids back out of that range (`pcilibs_rs::cc::
-C2C_DEVIDS`): GH200 out of Hopper. Its CC mode is owned by system firmware and
-cannot be raised in-band, so leaving it in would mean a `ppcie` run selects
-the node only to have the binary refuse it. Excluding it here means that
-refusal never happens — `--mode off` still finds and binds a GH200 node, just
-not through this label.
+Both rules carve the C2C ids back out of their range (`pcilibs_rs::cc::
+C2C_DEVIDS`): GH200 out of Hopper, GB200 and GB300 out of Blackwell. Their CC
+mode is owned by system firmware and cannot be raised in-band, so leaving them
+in would mean a `ppcie`/`cc` run selects the node only to have the binary
+refuse it. Excluding them here means that refusal never happens — `--mode off`
+still finds and binds a GH200 or GB200/GB300 node, just not through these two
+labels.
