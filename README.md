@@ -155,7 +155,7 @@ On an HGX H100 board: discovery, `cc=on` across all eight GPUs, and `ppcie` over
 the GPUs and all four NVSwitches, each verified by re-reading the hardware, with
 the mode and the binding surviving a cold reboot.
 
-On a GH200: multi-domain PCI, refusal to set a mode system firmware owns, BAR0
+On a GH200: multi-domain PCI, refusal to raise a mode the Grace CPU cannot back, BAR0
 on a coherent GPU, and `nvgrace_gpu_vfio_pci` resolved from the alias table and
 re-bound across a cold boot by the generated udev rule — see
 [ARCHITECTURE.md](ARCHITECTURE.md#variant-drivers-need-a-udev-rule-instead).
