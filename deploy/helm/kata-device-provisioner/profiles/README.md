@@ -11,6 +11,7 @@ they ask for — and are otherwise the chart's defaults.
 | [`HGX-Bx00`](HGX-Bx00.values.yaml) | HGX Bx00 (B200, B300) | `off` |
 | [`HGX-Bx00-CC`](HGX-Bx00-CC.values.yaml) | HGX Bx00 | `on` — single-GPU and multi-GPU |
 | [`PCIE-GPU`](PCIE-GPU.values.yaml) | discrete cards, no NVSwitch | `off` |
+| [`PCIE-GPU-CC`](PCIE-GPU-CC.values.yaml) | discrete cards, no NVSwitch | `on`, per GPU |
 
 Profiles are per chip generation, not per SKU: `HGX-Hx00` matches any GH100
 board (an H100, H200, H800 or H20 baseboard looks the same from PCI config
@@ -174,7 +175,7 @@ the binary refuse it. Excluding them here means that refusal never happens —
 `--mode off` still finds and binds a GH200 or GB200/GB300 node, just not
 through these two labels.
 
-`nvidia-c2c` names the same ids outright, for `PCIE-GPU`: its base match,
-`nvidia-gpu`, is not range-restricted the way the generation labels are, so a
-bare GH200 or GB200/GB300 would otherwise pass its "no NVSwitch" test, and a
-superchip is not an add-in card. `PCIE-GPU` excludes it explicitly.
+`nvidia-c2c` names the same ids outright, for the `PCIE-GPU` profiles: their
+base match, `nvidia-gpu`, is not range-restricted the way the generation labels
+are, so a bare GH200 or GB200/GB300 would otherwise pass their "no NVSwitch"
+test and hit the same refusal under `PCIE-GPU-CC`. Both exclude it explicitly.
