@@ -23,12 +23,12 @@ avoids that: `nvidia-hopper`/`nvidia-blackwell` simply never select the node.
 they need a profile of their own once one exists. A range this tree does not
 know about yet means a node is missed, not mislabelled.
 
-nvidia-c2c names those same ids outright, for PCIE-GPU: its base match is
-`nvidia-gpu`, which is not range-restricted the way nvidia-hopper/blackwell
-are, so a bare GH200 or GB200/GB300 (no NVSwitch either) would otherwise pass
-its "add-in card" selector, and a superchip is not an add-in card. Exactly
-`pcilibs_rs::cc::C2C_DEVIDS`, not a range: there is no chip-generation range to
-carve it out of here.
+nvidia-c2c names those same ids outright, for the PCIE-GPU profiles: their base
+match is `nvidia-gpu`, which is not range-restricted the way
+nvidia-hopper/blackwell are, so a bare GH200 or GB200/GB300 (no NVSwitch
+either) would otherwise pass their "add-in card" selector and hit the same
+refusal. Exactly `pcilibs_rs::cc::C2C_DEVIDS`, not a range: there is no
+chip-generation range to carve it out of here.
 
 Cluster-scoped with no node-specific content, so the release owns it and
 `helm uninstall` takes it away.
