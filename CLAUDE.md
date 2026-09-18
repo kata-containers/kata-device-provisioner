@@ -90,8 +90,9 @@ all, so a trait shaped like NVIDIA's would be the wrong abstraction
   and applied board-wide.
 - A board in PPCIE has per-GPU CC off, so it must not be labelled from the CC
   mode alone: that would report a protected node as not ready.
-- On C2C parts (GH200, GB200) CC is owned by system firmware and cannot be set
-  in-band. The CC stage verifies and reports there; it does not pretend to set.
+- On C2C parts (GH200, GB200) confidential computing needs the CPU to support it
+  as well as the GPU, and Grace does not, so there is no mode to raise. The CC
+  stage verifies and reports there; it does not pretend to set.
   The same device ids also need `nvgrace_gpu_vfio_pci` rather than `vfio-pci`,
   which is what `cc::is_c2c` is used for on the binding side. That driver's
   module and driver names happen to be identical, unlike `vfio_pci`/`vfio-pci`,

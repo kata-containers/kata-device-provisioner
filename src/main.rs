@@ -350,20 +350,20 @@ fn verify_capable(states: &[DeviceState], mode: Mode) -> Result<()> {
     }
 
     if mode.cc_target() != cc::CcMode::Off {
-        let firmware_owned: Vec<String> = states
+        let grace_attached: Vec<String> = states
             .iter()
             .filter(|state| state.provisioning() == Some(Provisioning::NvidiaInBandCc))
             .filter(|state| cc::is_c2c(state.device_id))
             .map(|state| format!("{} ({})", state.address, state.device_name))
             .collect();
 
-        if !firmware_owned.is_empty() {
+        if !grace_attached.is_empty() {
             bail!(
-                "mode {mode} cannot be set in band on {} of this node's devices: CC on a Grace \
-                 superchip is owned by system firmware and set at bring-up: {}. Set it there, \
-                 then provision this node with --mode off",
-                firmware_owned.len(),
-                firmware_owned.join(", ")
+                "mode {mode} needs confidential computing from the CPU as well as the GPU, and \
+                 the Grace CPU {} of this node's devices are attached to has none: {}. Provision \
+                 this node with --mode off, or leave it out of the run's node selection",
+                grace_attached.len(),
+                grace_attached.join(", ")
             );
         }
     }
@@ -653,15 +653,15 @@ mod tests {
         verify_capable(&states, Mode::On).unwrap();
     }
 
-    /// Turning CC off is still allowed there: it is only raising it that the
-    /// firmware owns.
+    /// Turning CC off is still allowed there: it is only a raised mode that
+    /// needs the CPU's half.
     #[rstest]
     #[case::grace_hopper_on(GH200, Mode::On, false)]
     #[case::grace_blackwell_on(GB200, Mode::On, false)]
     #[case::grace_blackwell_devtools(GB200, Mode::DevTools, false)]
     #[case::grace_blackwell_off(GB200, Mode::Off, true)]
     #[case::pcie_gpu_is_ours_to_set(H100, Mode::On, true)]
-    fn refuses_to_raise_cc_where_system_firmware_owns_it(
+    fn refuses_to_raise_cc_where_the_cpu_cannot_back_it(
         sysfs: Fake,
         #[case] device: (u16, u32),
         #[case] mode: Mode,
