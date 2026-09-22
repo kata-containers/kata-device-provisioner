@@ -1,16 +1,11 @@
 {{- /*
-The mirror image of the provisioning dispatcher, as a pre-delete hook: one
-node-pinned Job per node that removes the modprobe configuration and releases the
-devices, then the node label that said this ran.
+The pre-delete hook removes boot persistence and the result labels without
+changing live bindings or CC mode, so uninstall does not disrupt workloads.
 
 Node selection here is not the provisioning selection. Uninstall has to reach
 every node this release ever provisioned, including ones that no longer match
 `nodeSelector` or have since been tainted, so it selects on the presence of the
 result label instead — whatever its value.
-
-CC mode is deliberately left as it is: reverting it costs a reset per GPU, and
-"stop managing this node" is no reason to reset its hardware. Put the fleet back
-with `ccMode: "off"` before uninstalling if that is what you want.
 
 This runs while the release's ServiceAccount, RBAC and job-templates ConfigMap
 still exist: they are torn down only after pre-delete hooks complete.

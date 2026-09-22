@@ -87,11 +87,11 @@ kata-device-provisioner status --all     # every passthrough-capable device
 kata-device-provisioner status --probe   # read live CC mode (root, maps BAR0)
 
 kata-device-provisioner apply --mode on  # provision this node
-kata-device-provisioner uninstall        # remove the boot config, release devices
+kata-device-provisioner uninstall        # remove the boot config
 ```
 
-`uninstall` leaves CC mode alone, because reverting it costs a GPU reset per
-device.
+`uninstall` leaves the live bindings and CC mode alone. It only stops the node
+from restoring the bindings after its next reboot.
 
 Every kernel path is a flag (`--sysfs`, `--proc`, `--dev-vfio`,
 `--host-root`), so the whole thing can be exercised against a directory tree

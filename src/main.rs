@@ -81,7 +81,7 @@ enum Command {
         roots: Roots,
     },
 
-    /// Undo the modprobe configuration and release the devices.
+    /// Remove the boot configuration, leaving live devices unchanged.
     Uninstall {
         #[command(flatten)]
         roots: Roots,
@@ -439,19 +439,9 @@ fn verify_idle(roots: &Roots, sysfs: &Sysfs, states: &[DeviceState]) -> Result<(
 }
 
 fn uninstall(roots: &Roots) -> Result<()> {
-    let sysfs = &roots.sysfs();
-
-    // First: config left behind would reclaim on boot what is released below.
     modules::unpersist(&roots.host_root)?;
 
-    for state in in_scope(sysfs)? {
-        vfio::unbind(sysfs, &state.address)?;
-        println!("{}: released", state.address);
-    }
-
-    // Reverting CC costs a reset per device, which "stop managing this node"
-    // is no reason to do.
-    println!("boot configuration removed; CC mode left unchanged");
+    println!("boot configuration removed; live bindings and CC mode left unchanged");
     Ok(())
 }
 
@@ -539,6 +529,42 @@ mod tests {
 
         let unbound = sysfs.driver_unbind(bound.unwrap_or("vfio-pci")) == address;
         assert_eq!(unbound, released);
+    }
+
+    #[rstest]
+    fn uninstall_removes_only_boot_configuration(sysfs: Fake) {
+        let address = "0000:65:00.0";
+        sysfs.add_driver("vfio-pci");
+        sysfs.add_pci_device(address, 0x10de, H100.0, H100.1, Some("vfio-pci"));
+
+        let proc_root = tempfile::tempdir().unwrap();
+        let dev_vfio = tempfile::tempdir().unwrap();
+        let host = tempfile::tempdir().unwrap();
+        modules::persist(
+            host.path(),
+            &[modules::Claim {
+                address: address.to_string(),
+                vendor: 0x10de,
+                device: H100.0,
+                module: "vfio_pci".to_string(),
+                driver: "vfio-pci".to_string(),
+            }],
+        )
+        .unwrap();
+
+        uninstall(&Roots {
+            sysfs: sysfs.root().to_path_buf(),
+            proc: proc_root.path().to_path_buf(),
+            dev_vfio: dev_vfio.path().to_path_buf(),
+            host_root: host.path().to_path_buf(),
+        })
+        .unwrap();
+
+        assert_eq!(sysfs.driver_unbind("vfio-pci"), "");
+        assert!(!host
+            .path()
+            .join("etc/modprobe.d/kata-device-provisioner.conf")
+            .exists());
     }
 
     /// Which knob a Hopper GPU actually writes depends on where the node was,
