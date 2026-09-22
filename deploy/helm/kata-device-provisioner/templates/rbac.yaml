@@ -1,0 +1,109 @@
+{{- /*
+The dispatcher's identity, and the only credentials in this release.
+
+Nothing that touches a GPU has an identity at all: the per-node Jobs run with
+automountServiceAccountToken: false, which is what makes it acceptable to run
+them privileged on nodes that also host untrusted workloads.
+
+Kept until the release is deleted (post-delete), because the uninstall
+dispatcher is a pre-delete hook and needs to be able to log in.
+*/ -}}
+{{- if include "kata-device-provisioner.hasEnabledProfiles" . | trim }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "kata-device-provisioner.dispatcherServiceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{- include "kata-device-provisioner.labels" . | nindent 4 }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ .Chart.Name }}-dispatcher
+  labels:
+{{- include "kata-device-provisioner.labels" . | nindent 4 }}
+rules:
+# Enumerating the nodes to provision is inherently cluster-scoped. `get` re-reads
+# one node to check it came back Ready; `patch` writes the result label, which is
+# the work the per-node Jobs would otherwise need a token of their own to do.
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["list", "get", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ .Chart.Name }}-dispatcher
+  labels:
+{{- include "kata-device-provisioner.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ .Chart.Name }}-dispatcher
+subjects:
+- kind: ServiceAccount
+  name: {{ include "kata-device-provisioner.dispatcherServiceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Chart.Name }}-dispatcher
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{- include "kata-device-provisioner.labels" . | nindent 4 }}
+rules:
+# Per-node Jobs, in its own namespace and nowhere else.
+- apiGroups: ["batch"]
+  resources: ["jobs"]
+  verbs: ["create", "get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Chart.Name }}-dispatcher
+  namespace: {{ .Release.Namespace }}
+  labels:
+{{- include "kata-device-provisioner.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Chart.Name }}-dispatcher
+subjects:
+- kind: ServiceAccount
+  name: {{ include "kata-device-provisioner.dispatcherServiceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+---
+# The result is also published as an Event against the Node, which is what
+# `kubectl describe node` shows. Not in the release namespace: a Node has no
+# namespace, and the apiserver only accepts an Event about a cluster-scoped
+# object in "default" — where the kubelet's own Node events go.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Chart.Name }}-dispatcher-events
+  namespace: default
+  labels:
+{{- include "kata-device-provisioner.labels" . | nindent 4 }}
+rules:
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Chart.Name }}-dispatcher-events
+  namespace: default
+  labels:
+{{- include "kata-device-provisioner.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ .Chart.Name }}-dispatcher-events
+subjects:
+- kind: ServiceAccount
+  name: {{ include "kata-device-provisioner.dispatcherServiceAccountName" . }}
+  namespace: {{ .Release.Namespace }}
+{{- end }}

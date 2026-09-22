@@ -1,0 +1,32 @@
+{{- define "kata-device-provisioner.notesForProfile" -}}
+{{- $overrides := include "kata-device-provisioner.overrideModes" . | splitList "," | compact -}}
+{{- with .profileName }}
+Profile {{ . }}:
+{{ end -}}
+kata-device-provisioner is provisioning {{ if .Values.job.nodes }}{{ len .Values.job.nodes }} named node(s){{ else if .Values.nodeSelector }}the nodes matching {{ include "kata-device-provisioner.nodeSelector" (dict "root" . "extra" "") }}{{ else }}EVERY node in the cluster{{ end }} with CC mode {{ include "kata-device-provisioner.ccMode" . }}.
+{{ if $overrides }}
+Nodes labelled {{ .Values.ccModeLabel }}={{ join " or " $overrides }} get that mode instead.
+{{ end }}
+The dispatcher creates one Job per node and labels each node that succeeds.
+
+Watch it:
+
+  kubectl -n {{ .Release.Namespace }} logs -f job/{{ include "kata-device-provisioner.profileResourceName" (dict "root" . "suffix" "provision-dispatcher") }}
+  kubectl -n {{ .Release.Namespace }} logs -l kata-device-provisioner/stage=provision --tail=-1 --prefix
+
+See what it did:
+
+  kubectl get nodes -L {{ .Values.ccModeStateLabel }}
+
+A node is provisioned when it carries that label. If one is missing, its Job's
+log names the device and the reason; nothing was changed on a node that failed.
+
+To undo it, `helm uninstall` removes the modprobe configuration and releases the
+devices, but leaves CC mode alone: reverting it costs a GPU reset per device.
+Set ccMode to "off" and upgrade first if you want the hardware back as it was.
+{{- end -}}
+{{- if include "kata-device-provisioner.hasEnabledProfiles" . | trim }}
+{{ include "kata-device-provisioner.renderProfiles" (dict "root" . "renderer" "kata-device-provisioner.notesForProfile") }}
+{{- else }}
+kata-device-provisioner has no enabled profiles; no provisioning or cleanup runs were rendered.
+{{- end }}

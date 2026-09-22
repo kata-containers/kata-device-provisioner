@@ -1,0 +1,137 @@
+# MIXED-FLEET: one release for a cluster with more than one kind of GPU node.
+#
+# Every block below is commented out. Uncomment the ones your fleet has, and
+# nothing else. Each is an independent run with its own node selection, CC mode
+# and pacing, so the modes need not agree with one another.
+#
+# Only the `#` lines are values. Prose is `##`, so uncommenting a whole block
+# in an editor cannot turn a sentence into YAML.
+#
+# Two rules:
+#
+#   - At most one block per hardware class. The alternatives in each section
+#     select the same nodes and differ only in mode, so enabling both leaves
+#     two runs provisioning one node to two different modes, indefinitely.
+#   - Nothing for hardware you do not have. A profile whose nodes never appear
+#     waits `job.waitForNodesSeconds` and then fails the install, which is
+#     deliberate — an empty selection that said nothing would be worse.
+#
+# Selections are already disjoint across the sections: the HGX ones require an
+# NVSwitch, the discrete-card ones refuse anything that has one, and every
+# section but the last excludes Grace superchips by device id.
+#
+# These are the ready-made profiles in this directory, verbatim. A fleet of one
+# kind is better served by that single file, which documents its hardware.
+#
+#   helm install kata-device-provisioner deploy/helm/kata-device-provisioner \
+#     --namespace kata-system --create-namespace \
+#     -f deploy/helm/kata-device-provisioner/profiles/MIXED-FLEET.values.yaml
+
+profiles:
+
+  ## Hopper HGX boards — H100, H200, H800, H20 ###############################
+
+  ## Bound for passthrough, confidential computing left off.
+  # HGX-Hx00:
+  #   enabled: true
+  #   ccMode: "off"
+  #   nodeFeatureRule:
+  #     enabled: true
+  #   nodeSelector:
+  #     kata.feature.node.kubernetes.io/nvidia-hopper: "true"
+  #     kata.feature.node.kubernetes.io/nvidia-nvswitch: "true"
+  #   job:
+  #     parallelism: 2
+  #     activeDeadlineSeconds: 3600
+
+  ## Or the whole baseboard to one confidential VM, over Protected PCIe.
+  ## Per-GPU CC reads back off under PPCIE, which is correct, not a failure.
+  # HGX-Hx00-PPCIE:
+  #   enabled: true
+  #   ccMode: ppcie
+  #   nodeFeatureRule:
+  #     enabled: true
+  #   nodeSelector:
+  #     kata.feature.node.kubernetes.io/nvidia-hopper: "true"
+  #     kata.feature.node.kubernetes.io/nvidia-nvswitch: "true"
+  #   job:
+  #     parallelism: 2
+  #     activeDeadlineSeconds: 3600
+
+  ## Blackwell HGX boards — B200, B300 #######################################
+
+  ## Bound for passthrough, confidential computing left off.
+  # HGX-Bx00:
+  #   enabled: true
+  #   ccMode: "off"
+  #   nodeFeatureRule:
+  #     enabled: true
+  #   nodeSelector:
+  #     kata.feature.node.kubernetes.io/nvidia-blackwell: "true"
+  #     kata.feature.node.kubernetes.io/nvidia-nvswitch: "true"
+  #   job:
+  #     parallelism: 2
+  #     activeDeadlineSeconds: 3600
+
+  ## Or CC mode on, which covers a workload using one GPU or every GPU on the
+  ## board: NVLink encryption puts the switches outside the trusted base.
+  # HGX-Bx00-CC:
+  #   enabled: true
+  #   ccMode: "on"
+  #   nodeFeatureRule:
+  #     enabled: true
+  #   nodeSelector:
+  #     kata.feature.node.kubernetes.io/nvidia-blackwell: "true"
+  #     kata.feature.node.kubernetes.io/nvidia-nvswitch: "true"
+  #   job:
+  #     parallelism: 2
+  #     activeDeadlineSeconds: 3600
+
+  ## Discrete PCIe cards — add-in cards rather than an SXM baseboard #########
+
+  ## Bound for passthrough, confidential computing left off, so a generation
+  ## too old for CC is covered by this one as well as a Hopper or Blackwell
+  ## card.
+  # PCIE-GPU:
+  #   enabled: true
+  #   ccMode: "off"
+  #   nodeFeatureRule:
+  #     enabled: true
+  #   nodeSelector:
+  #     kata.feature.node.kubernetes.io/nvidia-gpu: "true"
+  #   nodeSelectorExpressions:
+  #     - "!kata.feature.node.kubernetes.io/nvidia-nvswitch"
+  #     - "!kata.feature.node.kubernetes.io/nvidia-c2c"
+  #   job:
+  #     parallelism: 10
+
+  ## Or one CC-mode GPU per confidential VM. Cards paired over an NVLink
+  ## bridge stay two independent GPUs here, each with its own mode and binding.
+  # PCIE-GPU-CC:
+  #   enabled: true
+  #   ccMode: "on"
+  #   nodeFeatureRule:
+  #     enabled: true
+  #   nodeSelector:
+  #     kata.feature.node.kubernetes.io/nvidia-gpu: "true"
+  #   nodeSelectorExpressions:
+  #     - "!kata.feature.node.kubernetes.io/nvidia-nvswitch"
+  #     - "!kata.feature.node.kubernetes.io/nvidia-c2c"
+  #   job:
+  #     parallelism: 10
+
+  ## Grace-Blackwell superchips — GB200, GB300 ###############################
+
+  ## No alternative here: confidential computing needs the CPU to support it as
+  ## well as the GPU, and Grace does not, so `off` is the only mode these
+  ## nodes can be provisioned into.
+  # GBx00:
+  #   enabled: true
+  #   ccMode: "off"
+  #   nodeFeatureRule:
+  #     enabled: true
+  #   nodeSelector:
+  #     kata.feature.node.kubernetes.io/nvidia-grace-blackwell: "true"
+  #   job:
+  #     parallelism: 2
+  #     activeDeadlineSeconds: 3600

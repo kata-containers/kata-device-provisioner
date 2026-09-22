@@ -340,12 +340,12 @@ evidence, will not exist.
 
 ### Grace superchips are a verify-only platform
 
-On C2C parts (GH200, GB200) confidential computing is owned by system firmware;
-`pcilibs_rs::cc` refuses to enable it in-band, matching `gpu-admin-tools`. On those
-platforms this component cannot *set* the mode — the mode is a BMC / host
-firmware setting made at bring-up. The provisioner still discovers, verifies,
-binds and labels, and fails clearly if the firmware state does not match what
-the release asks for.
+On C2C parts (GH200, GB200) confidential computing takes more than the GPU: the
+CPU has to support it too, and Grace does not. `pcilibs_rs::cc` refuses to
+enable CC on those ids, matching `gpu-admin-tools`, so this component never
+*sets* a mode there — there is no mode on that node to set. The provisioner
+still discovers, verifies, binds and labels, and refuses the node outright if
+the release asks for anything but `off`.
 
 This matters because GB200 NVL72 is a primary target of the device plugin.
 The provisioner must be honest that its CC stage is a no-op there rather than
@@ -508,7 +508,7 @@ would have been fine, chosen over silently mis-binding a coherent one.
 
 The alias table cannot tell "no variant driver exists" from "this kernel has not
 heard of it", but `pcilibs_rs::cc` can, because it already carries the C2C device ids to
-decide where CC mode is owned by system firmware — the same set, since C2C is
+decide where no CC mode can be raised at all — the same set, since C2C is
 what makes the variant driver necessary. So a coherently attached GPU that
 resolves to plain `vfio-pci` is refused with the kernel named as the problem,
 and every other device keeps the fallback.
