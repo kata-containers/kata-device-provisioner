@@ -81,7 +81,7 @@ enum Command {
         roots: Roots,
     },
 
-    /// Undo the modprobe configuration and release the devices.
+    /// Remove the boot configuration, leaving live devices unchanged.
     Uninstall {
         #[command(flatten)]
         roots: Roots,
@@ -161,19 +161,26 @@ fn apply(mode: Mode, roots: &Roots) -> Result<()> {
 
     host::check(&sysfs)?;
 
-    let states = in_scope(&sysfs)?;
+    let mut states = in_scope(&sysfs)?;
     if states.is_empty() {
         bail!("no devices in scope: this node was selected for provisioning but has none");
     }
 
     // Across every device before any is touched: refuse whole, not half.
     verify_capable(&states, mode)?;
-    verify_idle(roots, &sysfs, &states)?;
 
     let passthrough = passthrough_set(&states, mode);
 
     // Before any reset, so a missing driver is not found out half way through.
     let drivers = resolve_drivers(&sysfs, roots, &passthrough)?;
+
+    // Re-read in `nvidia::apply`: hardware may change after this safety check.
+    let unreadable = nvidia::probe_modes(&mut states);
+    verify_idle(
+        roots,
+        &sysfs,
+        &writable(&sysfs, &states, &passthrough, &drivers, mode, &unreadable),
+    )?;
 
     mode_stage(&states, mode)?;
 
@@ -422,12 +429,45 @@ fn verify(
     Ok(())
 }
 
+/// Busy devices block only runs that would change them, so converged nodes can
+/// be upgraded while Kata workloads are running.
+fn writable(
+    sysfs: &Sysfs,
+    states: &[DeviceState],
+    passthrough: &[DeviceState],
+    drivers: &HashMap<String, VfioDriver>,
+    mode: Mode,
+    unreadable: &HashMap<String, String>,
+) -> Vec<DeviceState> {
+    states
+        .iter()
+        .filter(|state| {
+            let current = vfio::current_driver(sysfs, &state.address);
+
+            if !passthrough.iter().any(|kept| kept.address == state.address) {
+                return current.is_some_and(|driver| driver.replace('-', "_").contains("vfio"));
+            }
+
+            match drivers.get(&state.address) {
+                // An unknown target cannot prove that the device is converged.
+                None => true,
+                Some(target) if current.as_deref() != Some(target.driver.as_str()) => true,
+                Some(_) => {
+                    unreadable.contains_key(&state.address)
+                        || !nvidia::writes_for(state.cc_mode, state.ppcie_mode, mode).is_empty()
+                }
+            }
+        })
+        .cloned()
+        .collect()
+}
+
 fn verify_idle(roots: &Roots, sysfs: &Sysfs, states: &[DeviceState]) -> Result<()> {
     for state in states {
         let holders = idle::holders(&roots.proc, &roots.dev_vfio, sysfs, state);
         if let Some(holder) = holders.first() {
             bail!(
-                "{}: in use by pid {} ({}): refusing to reset a device a VM may be running on",
+                "{}: in use by pid {} ({}): refusing to change a device a VM may be running on",
                 state.address,
                 holder.pid,
                 holder.comm
@@ -439,19 +479,9 @@ fn verify_idle(roots: &Roots, sysfs: &Sysfs, states: &[DeviceState]) -> Result<(
 }
 
 fn uninstall(roots: &Roots) -> Result<()> {
-    let sysfs = &roots.sysfs();
-
-    // First: config left behind would reclaim on boot what is released below.
     modules::unpersist(&roots.host_root)?;
 
-    for state in in_scope(sysfs)? {
-        vfio::unbind(sysfs, &state.address)?;
-        println!("{}: released", state.address);
-    }
-
-    // Reverting CC costs a reset per device, which "stop managing this node"
-    // is no reason to do.
-    println!("boot configuration removed; CC mode left unchanged");
+    println!("boot configuration removed; live bindings and CC mode left unchanged");
     Ok(())
 }
 
@@ -465,8 +495,11 @@ fn in_scope(sysfs: &Sysfs) -> Result<Vec<DeviceState>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use pcilibs_rs::cc::CcMode;
     use pcilibs_rs::testfs::{self, Fake};
     use rstest::{fixture, rstest};
+    use std::fs;
+    use tempfile::TempDir;
 
     const H100: (u16, u32) = (0x2330, 0x030200);
     const B200: (u16, u32) = (0x2901, 0x030200);
@@ -492,6 +525,25 @@ mod tests {
         }
 
         in_scope(&sysfs.sysfs).unwrap()
+    }
+
+    fn hold(proc_root: &TempDir, dev_vfio: &TempDir, pid: u32, comm: &str, group: &str) {
+        let process = proc_root.path().join(pid.to_string());
+        fs::create_dir_all(process.join("fd")).unwrap();
+        fs::write(process.join("comm"), format!("{comm}\n")).unwrap();
+
+        let node = dev_vfio.path().join(group);
+        fs::write(&node, "").unwrap();
+        std::os::unix::fs::symlink(&node, process.join("fd").join("3")).unwrap();
+    }
+
+    fn roots(sysfs: &Fake, proc_root: &TempDir, dev_vfio: &TempDir, host: &TempDir) -> Roots {
+        Roots {
+            sysfs: sysfs.root().to_path_buf(),
+            proc: proc_root.path().to_path_buf(),
+            dev_vfio: dev_vfio.path().to_path_buf(),
+            host_root: host.path().to_path_buf(),
+        }
     }
 
     #[rstest]
@@ -539,6 +591,163 @@ mod tests {
 
         let unbound = sysfs.driver_unbind(bound.unwrap_or("vfio-pci")) == address;
         assert_eq!(unbound, released);
+    }
+
+    #[rstest]
+    fn uninstall_removes_only_boot_configuration(sysfs: Fake) {
+        let address = "0000:65:00.0";
+        sysfs.add_driver("vfio-pci");
+        sysfs.add_pci_device(address, 0x10de, H100.0, H100.1, Some("vfio-pci"));
+
+        let proc_root = tempfile::tempdir().unwrap();
+        let dev_vfio = tempfile::tempdir().unwrap();
+        let host = tempfile::tempdir().unwrap();
+        modules::persist(
+            host.path(),
+            &[modules::Claim {
+                address: address.to_string(),
+                vendor: 0x10de,
+                device: H100.0,
+                module: "vfio_pci".to_string(),
+                driver: "vfio-pci".to_string(),
+            }],
+        )
+        .unwrap();
+
+        uninstall(&Roots {
+            sysfs: sysfs.root().to_path_buf(),
+            proc: proc_root.path().to_path_buf(),
+            dev_vfio: dev_vfio.path().to_path_buf(),
+            host_root: host.path().to_path_buf(),
+        })
+        .unwrap();
+
+        assert_eq!(sysfs.driver_unbind("vfio-pci"), "");
+        assert!(!host
+            .path()
+            .join("etc/modprobe.d/kata-device-provisioner.conf")
+            .exists());
+    }
+
+    fn vfio_pci() -> VfioDriver {
+        VfioDriver {
+            module: "vfio_pci".to_string(),
+            driver: "vfio-pci".to_string(),
+        }
+    }
+
+    /// `apply` itself requires chroot and the host's modprobe.
+    #[rstest]
+    #[case::converged(Some(CcMode::On), false)]
+    #[case::the_mode_has_to_change(Some(CcMode::Off), true)]
+    fn a_holder_stops_only_a_run_with_a_write_for_it(
+        sysfs: Fake,
+        #[case] cc: Option<CcMode>,
+        #[case] refused: bool,
+    ) {
+        let address = "0000:65:00.0";
+        sysfs.add_driver("vfio-pci");
+        sysfs.add_pci_device(address, 0x10de, H100.0, H100.1, Some("vfio-pci"));
+        sysfs.set_iommu_group(address, 14);
+
+        let proc_root = tempfile::tempdir().unwrap();
+        let dev_vfio = tempfile::tempdir().unwrap();
+        let host = tempfile::tempdir().unwrap();
+        hold(&proc_root, &dev_vfio, 4242, "qemu-system-x86", "14");
+
+        let mut states = in_scope(&sysfs.sysfs).unwrap();
+        states[0].cc_mode = cc;
+
+        let writable = writable(
+            &sysfs.sysfs,
+            &states,
+            &passthrough_set(&states, Mode::On),
+            &HashMap::from([(address.to_string(), vfio_pci())]),
+            Mode::On,
+            &HashMap::new(),
+        );
+        let outcome = verify_idle(
+            &roots(&sysfs, &proc_root, &dev_vfio, &host),
+            &sysfs.sysfs,
+            &writable,
+        );
+
+        assert_eq!(outcome.is_err(), refused, "{outcome:?}");
+    }
+
+    /// A running Kata workload must not block a no-op upgrade.
+    #[rstest]
+    #[case::nothing_to_do(Some("vfio-pci"), Some(CcMode::On), false)]
+    #[case::the_mode_has_to_change(Some("vfio-pci"), Some(CcMode::Off), true)]
+    #[case::it_still_has_to_be_bound(None, Some(CcMode::On), true)]
+    #[case::another_driver_has_it(Some("nvidia"), Some(CcMode::On), true)]
+    fn only_devices_a_run_would_write_to_are_checked(
+        sysfs: Fake,
+        #[case] bound: Option<&str>,
+        #[case] cc: Option<CcMode>,
+        #[case] writes: bool,
+    ) {
+        let mut states = node(&sysfs, &[H100]);
+        let address = states[0].address.clone();
+        sysfs.add_device(&address, bound);
+        states[0].cc_mode = cc;
+
+        let passthrough = passthrough_set(&states, Mode::On);
+        let drivers = HashMap::from([(address.clone(), vfio_pci())]);
+
+        let writable = writable(
+            &sysfs.sysfs,
+            &states,
+            &passthrough,
+            &drivers,
+            Mode::On,
+            &HashMap::new(),
+        );
+
+        assert_eq!(!writable.is_empty(), writes, "{writable:?}");
+    }
+
+    /// An unreadable mode cannot prove that no write is needed.
+    #[rstest]
+    fn a_mode_that_could_not_be_read_is_treated_as_writable(sysfs: Fake) {
+        let mut states = node(&sysfs, &[H100]);
+        let address = states[0].address.clone();
+        sysfs.add_device(&address, Some("vfio-pci"));
+        states[0].cc_mode = Some(CcMode::On);
+
+        let unreadable = HashMap::from([(address.clone(), "BAR0 unmappable".to_string())]);
+
+        let writable = writable(
+            &sysfs.sysfs,
+            &states,
+            &passthrough_set(&states, Mode::On),
+            &HashMap::from([(address, vfio_pci())]),
+            Mode::On,
+            &unreadable,
+        );
+
+        assert_eq!(writable.len(), 1);
+    }
+
+    /// Releasing a held VFIO device can block in the kernel indefinitely.
+    #[rstest]
+    fn a_device_about_to_be_released_is_writable(sysfs: Fake) {
+        let states = node(&sysfs, &[NVSWITCH]);
+        sysfs.add_device(&states[0].address, Some("vfio-pci"));
+
+        let passthrough = passthrough_set(&states, Mode::Off);
+        assert!(passthrough.is_empty(), "off leaves the switch on the host");
+
+        let writable = writable(
+            &sysfs.sysfs,
+            &states,
+            &passthrough,
+            &HashMap::new(),
+            Mode::Off,
+            &HashMap::new(),
+        );
+
+        assert_eq!(writable.len(), 1);
     }
 
     /// Which knob a Hopper GPU actually writes depends on where the node was,

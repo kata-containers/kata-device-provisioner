@@ -62,8 +62,8 @@ boundary in the middle of the set-and-reset pair, which has to be atomic.
 The label that follows a successful run is written by the dispatcher, not by
 this component — see below.
 
-Uninstall runs the reverse where it is meaningful (`unpersist -> unbind`);
-CC mode is deliberately *not* reverted on uninstall — see the decisions below.
+Uninstall removes only the boot configuration. Live bindings and CC mode are
+deliberately left alone — see the decisions below.
 
 ### Ordering
 
@@ -532,9 +532,9 @@ and every other device keeps the fallback.
   image builder's decision rather than the cluster's. Nodes built that way are
   already provisioned as far as binding goes; `status` and `verify` still work.
 
-### CC mode is not reverted on uninstall
+### Runtime state is not reverted on uninstall
 
-Uninstalling the chart removes labels and may release the VFIO binding, but
-leaves the GPUs in whatever CC mode they were put in. Flipping firmware state
-and resetting every GPU as a side effect of `helm uninstall` is a surprise, and
-the next provisioning run converges anyway.
+Uninstalling removes the configuration that restores VFIO bindings at boot. It
+does not unbind live devices or change CC mode: removing the provisioner must
+not disrupt a running workload. The next boot returns the devices to normal
+driver discovery, and a later provisioning run converges them again.

@@ -21,9 +21,9 @@ See what it did:
 A node is provisioned when it carries that label. If one is missing, its Job's
 log names the device and the reason; nothing was changed on a node that failed.
 
-To undo it, `helm uninstall` removes the modprobe configuration and releases the
-devices, but leaves CC mode alone: reverting it costs a GPU reset per device.
-Set ccMode to "off" and upgrade first if you want the hardware back as it was.
+`helm uninstall` removes the boot configuration and labels, but leaves live
+bindings and CC mode unchanged so running workloads are not disrupted and normal
+driver discovery resumes after the next reboot.
 {{- end -}}
 {{- if include "kata-device-provisioner.hasEnabledProfiles" . | trim }}
 {{ include "kata-device-provisioner.renderProfiles" (dict "root" . "renderer" "kata-device-provisioner.notesForProfile") }}
