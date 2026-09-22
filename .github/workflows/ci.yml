@@ -140,7 +140,7 @@ jobs:
       # explicit toolchain and will not pick that file up on its own.
       - name: Install Rust toolchain
         run: rustup show
-      - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2.87.10
+      - uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
         with:
           tool: cargo-audit
       - run: cargo audit
@@ -157,7 +157,7 @@ jobs:
           persist-credentials: false
       - name: Install Rust toolchain
         run: rustup show
-      - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2.87.10
+      - uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
         with:
           tool: cargo-deny
       - run: cargo deny check
@@ -175,7 +175,7 @@ jobs:
       - name: Install nightly toolchain
         run: rustup toolchain install nightly --profile minimal --no-self-update
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - uses: taiki-e/install-action@fa23953489c080190314742a9b907f8e97c6767c # v2.87.10
+      - uses: taiki-e/install-action@26e9283f268b880168bdbd2c545dfcd60ec2c6ab # v2.87.13
         with:
           tool: cargo-udeps
       # +nightly outranks rust-toolchain.toml; udeps needs nightly-only -Z flags.
