@@ -13,6 +13,7 @@ they ask for — and are otherwise the chart's defaults.
 | [`PCIE-GPU`](PCIE-GPU.values.yaml) | discrete cards, no NVSwitch | `off` |
 | [`PCIE-GPU-CC`](PCIE-GPU-CC.values.yaml) | discrete cards, no NVSwitch | `on`, per GPU |
 | [`GBx00`](GBx00.values.yaml) | Grace-Blackwell superchips (GB200, GB300) | `off` |
+| [`MIXED-FLEET`](MIXED-FLEET.values.yaml) | several of the above, in one release | per profile |
 
 Profiles are per chip generation, not per SKU: `HGX-Hx00` matches any GH100
 board (an H100, H200, H800 or H20 baseboard looks the same from PCI config
@@ -39,6 +40,14 @@ To try one named machine before selecting nodes by label, add
 `nodeSelector` outright and needs no NodeFeatureRule, and the per-node Job it
 creates tolerates every taint, so nothing about the node's admission state can
 quietly turn the run into a no-op.
+
+A cluster holding more than one kind of GPU node takes one release with a
+profile enabled per hardware class, each its own run with its own selection,
+mode and pacing. [`MIXED-FLEET`](MIXED-FLEET.values.yaml) is that file with
+every block commented out: uncomment the classes the fleet has, at most one
+mode per class. Their selections cannot collide — the HGX profiles require an
+NVSwitch, the discrete-card ones refuse a node that has one, and both exclude
+Grace superchips by device id — so the runs never contend for a node.
 
 ## The modes, and NVIDIA's
 
