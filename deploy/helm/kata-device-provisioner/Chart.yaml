@@ -6,10 +6,10 @@ type: application
 # The chart and the binary are released together from one tag, so both of
 # these equal the crate version in Cargo.toml. The release workflow refuses a
 # tag they disagree with. See RELEASING.md.
-version: "0.1.0-alpha.0"
+version: "0.1.0-alpha.1"
 
 # Version of kata-device-provisioner this chart deploys by default.
-appVersion: "0.1.0-alpha.0"
+appVersion: "0.1.0-alpha.1"
 
 keywords:
   - kata
