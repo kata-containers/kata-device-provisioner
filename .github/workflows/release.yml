@@ -19,6 +19,7 @@ permissions: {}
 env:
   IMAGE: ghcr.io/${{ github.repository }}
   CHARTS: oci://ghcr.io/${{ github.repository_owner }}/kata-device-provisioner-charts
+  NFD_CHARTS: https://kubernetes-sigs.github.io/node-feature-discovery/charts
 
 jobs:
   preflight:
@@ -114,6 +115,7 @@ jobs:
 
       - name: Lint the chart
         run: |
+          helm repo add node-feature-discovery "${NFD_CHARTS}"
           helm dependency build deploy/helm/kata-device-provisioner
           helm lint deploy/helm/kata-device-provisioner
 
@@ -266,6 +268,7 @@ jobs:
       - name: Package the chart
         run: |
           set -euo pipefail
+          helm repo add node-feature-discovery "${NFD_CHARTS}"
           helm dependency build deploy/helm/kata-device-provisioner
           helm package deploy/helm/kata-device-provisioner --destination out
           (cd out && sha256sum -- *.tgz > SHA256SUMS)
