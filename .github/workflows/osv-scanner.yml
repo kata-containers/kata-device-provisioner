@@ -27,7 +27,6 @@ jobs:
     with:
       scan-args: |-
         -r
-        --skip-git
         ./
 
   scan-pr:
@@ -40,5 +39,4 @@ jobs:
     with:
       scan-args: |-
         -r
-        --skip-git
         ./
