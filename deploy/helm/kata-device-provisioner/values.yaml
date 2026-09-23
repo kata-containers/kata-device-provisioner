@@ -45,9 +45,10 @@ node-feature-discovery:
   enabled: true
 
 image:
-  # Supports reference:tag and reference@sha256:digest.
+  # Supports reference:tag and reference@sha256:digest. An empty tag is the
+  # chart's appVersion, which a release sets to the version it publishes.
   reference: ghcr.io/kata-containers/kata-device-provisioner
-  tag: "0.1.0"
+  tag: ""
 
 imagePullPolicy: IfNotPresent
 imagePullSecrets: []

@@ -154,7 +154,7 @@ hold one per-node Job per mode.
 Image references. Both accept reference:tag and reference@sha256:digest.
 */}}
 {{- define "kata-device-provisioner.image" -}}
-{{- include "kata-device-provisioner.imageRef" (dict "image" .Values.image "key" "image") -}}
+{{- include "kata-device-provisioner.imageRef" (dict "image" .Values.image "key" "image" "default" .Chart.AppVersion) -}}
 {{- end -}}
 
 {{- define "kata-device-provisioner.dispatcherImage" -}}
@@ -163,7 +163,7 @@ Image references. Both accept reference:tag and reference@sha256:digest.
 
 {{- define "kata-device-provisioner.imageRef" -}}
 {{- $ref := .image.reference -}}
-{{- $tag := .image.tag | toString -}}
+{{- $tag := .image.tag | default .default | default "" | toString -}}
 {{- if contains "@" $ref -}}
 {{- $ref -}}
 {{- else if eq $tag "" -}}
