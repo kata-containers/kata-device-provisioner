@@ -38,15 +38,25 @@ jobs:
     name: actionlint
     needs: changes
     if: ${{ needs.changes.outputs.workflows == 'true' }}
-    env:
-      GH_TOKEN: ${{ github.token }}
     runs-on: ubuntu-26.04
+    env:
+      ACTIONLINT_VERSION: 1.7.12
+      ACTIONLINT_SHA256: 8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
     steps:
       - name: Checkout the code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install actionlint gh extension
-        run: gh extension install https://github.com/cschleiden/gh-actionlint
+      # The gh-actionlint extension bundles actionlint 1.7.6, which predates
+      # the artifact-metadata permission that release.yml needs.
+      - name: Install actionlint
+        run: |
+          set -euo pipefail
+          tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSLo "${RUNNER_TEMP}/${tarball}" \
+            "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${tarball}"
+          echo "${ACTIONLINT_SHA256}  ${RUNNER_TEMP}/${tarball}" | sha256sum -c -
+          tar -xzf "${RUNNER_TEMP}/${tarball}" -C "${RUNNER_TEMP}" actionlint
       - name: Run actionlint
-        run: gh actionlint
+        run: |
+          "${RUNNER_TEMP}/actionlint"
