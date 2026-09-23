@@ -113,6 +113,11 @@ helm install kata-device-provisioner deploy/helm/kata-device-provisioner \
   --set 'job.nodes={gpu-node-1}'
 ```
 
+Released charts are published to
+`oci://ghcr.io/kata-containers/kata-device-provisioner-charts/kata-device-provisioner`,
+so the same install works without a checkout by using that reference and
+passing `--version`. See [RELEASING.md](RELEASING.md).
+
 `job.nodes` names nodes outright, which is the quick way to try one machine.
 Drop it and set `nodeSelector` to provision a fleet — an empty one selects every
 node in the cluster, so select deliberately.
@@ -163,4 +168,5 @@ re-bound across a cold boot by the generated udev rule — see
 ## See also
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — boundary, pipeline, decisions
+- [RELEASING.md](RELEASING.md) — versioning, prereleases, cutting a release
 - [CLAUDE.md](CLAUDE.md) / [AGENTS.md](AGENTS.md) — contributor and agent guidance
