@@ -3,7 +3,9 @@ name: kata-device-provisioner
 description: Puts a node's passthrough GPUs into a CC mode and binds them to vfio-pci
 type: application
 
-# Chart version. Bump on any change to the chart itself.
+# The chart and the binary are released together from one tag, so both of
+# these equal the crate version in Cargo.toml. The release workflow refuses a
+# tag they disagree with. See RELEASING.md.
 version: "0.1.0"
 
 # Version of kata-device-provisioner this chart deploys by default.
