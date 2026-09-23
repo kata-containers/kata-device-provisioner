@@ -89,7 +89,7 @@ nothing, so run it before deciding which profile you need:
 
 ```sh
 kubectl debug node/gpu-node-1 -it --quiet \
-  --image=ghcr.io/kata-containers/kata-device-provisioner:0.1.0-alpha.0 \
+  --image=ghcr.io/kata-containers/kata-device-provisioner:0.1.0-alpha.1 \
   -- /kata-device-provisioner status --all --sysfs=/host/sys
 ```
 

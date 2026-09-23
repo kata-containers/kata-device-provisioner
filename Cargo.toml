@@ -1,6 +1,6 @@
 [package]
 name = "kata-device-provisioner"
-version = "0.1.0-alpha.0"
+version = "0.1.0-alpha.1"
 edition = "2021"
 description = "Sets CC mode and VFIO binding on Kata GPU nodes, then exits"
 authors = ["The Kata Containers community <kata-dev@lists.katacontainers.io>"]
