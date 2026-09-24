@@ -113,6 +113,9 @@ jobs:
       # CI ran on the pull request, but what is published is this commit.
       - run: cargo test --locked
 
+      - name: Verify committed profile index
+        run: cargo run --locked --manifest-path tools/profile-index/Cargo.toml -- --check
+
       - name: Lint the chart
         run: |
           helm repo add node-feature-discovery "${NFD_CHARTS}"
