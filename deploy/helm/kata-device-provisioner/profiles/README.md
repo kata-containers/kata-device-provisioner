@@ -4,6 +4,22 @@ Ready-made values for the hardware layouts this component is built for. They
 differ in two things that matter — which nodes they select, and which CC mode
 they ask for — and are otherwise the chart's defaults.
 
+Tools such as KRAB can read the generated [`index.json`](index.json) instead of
+parsing this page. It lists each deployable profile's GPU family, example model
+names, CC mode, and values file. Model names are examples, not a guarantee of
+end-to-end Kata support. `MIXED-FLEET` is an example, not a standalone profile.
+
+The preset values files are written by hand. The generator combines their CC
+modes and settings with the names and display details in
+[`catalog.json`](catalog.json) to write `index.json`. After changing either
+input, regenerate and commit the index:
+
+```sh
+cargo run --manifest-path tools/profile-index/Cargo.toml
+```
+
+CI does the same on every pull request and fails if the index is out of date.
+
 | Profile | Nodes | Mode |
 | --- | --- | --- |
 | [`HGX-Hx00`](HGX-Hx00.values.yaml) | HGX Hx00 (H100, H200, H800, H20) | `off` |

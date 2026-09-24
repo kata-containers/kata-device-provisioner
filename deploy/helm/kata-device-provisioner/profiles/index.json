@@ -1,0 +1,86 @@
+{
+  "schemaVersion": 1,
+  "families": [
+    {
+      "id": "hopper",
+      "displayName": "HGX Hx00",
+      "modelExamples": [
+        "H100",
+        "H200",
+        "H800",
+        "H20"
+      ],
+      "profiles": [
+        {
+          "name": "HGX-Hx00",
+          "ccMode": "off",
+          "valuesFile": "profiles/HGX-Hx00.values.yaml",
+          "valuesSha256": "ab0aa1f09754bb4f2c2eb1331b19a4fa1075b75570af8232e74a86c34f09c0f9"
+        },
+        {
+          "name": "HGX-Hx00-PPCIE",
+          "ccMode": "ppcie",
+          "valuesFile": "profiles/HGX-Hx00-PPCIE.values.yaml",
+          "valuesSha256": "ddd62cb2af45afe3d27007ce1c2ed0c0455a230908aec45a6bc18a8ea541ba85"
+        }
+      ]
+    },
+    {
+      "id": "blackwell",
+      "displayName": "HGX Bx00",
+      "modelExamples": [
+        "B200",
+        "B300"
+      ],
+      "profiles": [
+        {
+          "name": "HGX-Bx00",
+          "ccMode": "off",
+          "valuesFile": "profiles/HGX-Bx00.values.yaml",
+          "valuesSha256": "23f15fedac1d4b5406e02bc759d575f042acbf7da536cb139dfb9d8f08d09029"
+        },
+        {
+          "name": "HGX-Bx00-CC",
+          "ccMode": "on",
+          "valuesFile": "profiles/HGX-Bx00-CC.values.yaml",
+          "valuesSha256": "23789a384c7c9b2e13662176c855275057ca6a2b275638798461f2fff21bef70"
+        }
+      ]
+    },
+    {
+      "id": "pcie-gpu",
+      "displayName": "Discrete NVIDIA GPUs",
+      "modelExamples": [],
+      "profiles": [
+        {
+          "name": "PCIE-GPU",
+          "ccMode": "off",
+          "valuesFile": "profiles/PCIE-GPU.values.yaml",
+          "valuesSha256": "63501611b9e7ceedd37effcf8b8902bed95c92571e6fc3a084fd0d976e200472"
+        },
+        {
+          "name": "PCIE-GPU-CC",
+          "ccMode": "on",
+          "valuesFile": "profiles/PCIE-GPU-CC.values.yaml",
+          "valuesSha256": "e4663f1eca17ca6db840f3ba241611a1d9974e06cda25714301bba11e141a55b"
+        }
+      ]
+    },
+    {
+      "id": "grace-blackwell",
+      "displayName": "Grace-Blackwell GBx00",
+      "modelExamples": [
+        "GB200",
+        "GB300"
+      ],
+      "profiles": [
+        {
+          "name": "GBx00",
+          "ccMode": "off",
+          "valuesFile": "profiles/GBx00.values.yaml",
+          "valuesSha256": "d9cd81a0593b0e06dd533dc26dc7f3df5db349f34edd5ae7f3acd0caaa23b7ba"
+        }
+      ]
+    }
+  ]
+}

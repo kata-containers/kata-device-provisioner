@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 1,
+  "families": [
+    { "id": "hopper", "displayName": "HGX Hx00", "modelExamples": ["H100", "H200", "H800", "H20"], "profiles": ["HGX-Hx00", "HGX-Hx00-PPCIE"] },
+    { "id": "blackwell", "displayName": "HGX Bx00", "modelExamples": ["B200", "B300"], "profiles": ["HGX-Bx00", "HGX-Bx00-CC"] },
+    { "id": "pcie-gpu", "displayName": "Discrete NVIDIA GPUs", "modelExamples": [], "profiles": ["PCIE-GPU", "PCIE-GPU-CC"] },
+    { "id": "grace-blackwell", "displayName": "Grace-Blackwell GBx00", "modelExamples": ["GB200", "GB300"], "profiles": ["GBx00"] }
+  ]
+}

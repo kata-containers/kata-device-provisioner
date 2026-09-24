@@ -23,6 +23,21 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  profile-index:
+    name: Check generated profile index
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install Rust toolchain
+        run: rustup show
+      - name: Rebuild and compare profile index
+        run: |
+          git ls-files --error-unmatch deploy/helm/kata-device-provisioner/profiles/index.json
+          cargo run --locked --manifest-path tools/profile-index/Cargo.toml
+          git diff --exit-code -- deploy/helm/kata-device-provisioner/profiles/index.json
+
   # Detect if code (not just docs) changed - skip the heavy jobs if not.
   changes:
     name: Detect changes
