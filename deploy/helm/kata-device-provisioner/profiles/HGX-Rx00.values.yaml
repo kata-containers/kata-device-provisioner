@@ -1,21 +1,16 @@
-# The ServiceVM needs the management PFs even when workload GPUs use CC.
+# CPU type does not determine GPU attachment or the VFIO driver.
 # NFD selects candidates; pcilibs-rs must confirm their VPD management role.
-
+# Rx00 passthrough and ServiceVM startup still need hardware validation.
 profiles:
-  HGX-Bx00-CC:
+  HGX-Rx00:
     enabled: true
+    ccMode: "off"
     bindFabric: true
-    ccMode: "on"
-
     nodeFeatureRule:
       enabled: true
-
     nodeSelector:
-      kata.feature.node.kubernetes.io/nvidia-blackwell: "true"
+      kata.feature.node.kubernetes.io/nvidia-rubin: "true"
       kata.feature.node.kubernetes.io/nvidia-managed-fabric-candidate: "true"
-
     job:
-      # A mode change resets the GPUs, so this paces how much of the fleet loses
-      # accelerators at once. Raise it once you trust the rollout.
       parallelism: 2
       activeDeadlineSeconds: 3600

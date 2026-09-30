@@ -13,6 +13,7 @@
 profiles:
   HGX-Hx00:
     enabled: true
+    bindFabric: true
     ccMode: "off"
 
     nodeFeatureRule:

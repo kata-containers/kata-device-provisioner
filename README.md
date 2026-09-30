@@ -50,17 +50,27 @@ GPU beside it gets plain `vfio-pci` without either being named in this tree.
 The variant drivers match on nothing but `driver_override`, which no modprobe
 file can write, so those devices are carried by the udev rule instead.
 
+HGX profiles enable `bindFabric: true` so direct NVSwitches on Hx00 and
+qualified ConnectX management PFs on Bx00/Rx00 can be assigned to a ServiceVM.
+For the CLI, use `apply --mode off --bind-fabric`. Stop host fabric services
+and unbind their management PFs first: the binding preflight refuses another
+driver before any GPU mode changes. Management PF persistence
+uses address-specific udev rules, including detaching a driver that bound before
+udev processed the boot event. Reprovision after PCI addresses change.
+`HGX-Rx00` defaults to CC off and accepts coherent Rubin variants independently
+of CPU type; hardware and ServiceVM validation remain pending.
+
+VPD discovery may require root even for `status` without `--probe`.
+
 The work is driverless. CC mode is set in-band over BAR0 and the FSP mailbox
 via [`pcilibs_rs::cc`](https://github.com/kata-containers/pcilibs-rs), so the NVIDIA
 kernel driver never has to be present, and PCI/VFIO truth is read from sysfs
 via [`pcilibs-rs`](https://github.com/kata-containers/pcilibs-rs) — the same
 crate the device plugin uses to classify what it advertises.
 
-Which devices are in scope is one compile-time table keyed on PCI identity, so
-supporting another accelerator is one row. There is no vendor abstraction on
-purpose: TDISP devices (AMD SEV-TIO, Intel TDX Connect) are attested and locked
-to a VM at bind time by the platform, so they need no node-level mode at all —
-see [ARCHITECTURE.md](ARCHITECTURE.md).
+Which devices are in scope is a compile-time table plus shared VPD discovery
+for ConnectX management PFs. Ordinary NICs remain untouched even when they
+share a device ID with those PFs.
 
 ## What it does not do
 
