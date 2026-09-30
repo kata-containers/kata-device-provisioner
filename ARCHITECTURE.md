@@ -59,11 +59,15 @@ boundary in the middle of the set-and-reset pair, which has to be atomic.
 | `bind` | `driver_override` + probe, so the node is usable now without waiting for one |
 | `verify` | Re-read the mode and the binding from the hardware; the run fails loudly if it disagrees |
 
-The label that follows a successful run is written by the dispatcher, not by
-this component — see below.
+The completion label is written by the dispatcher, not this component.
+Verified fabric facts go to NFD through a local feature file after `verify`,
+so VPD access stays in the short-lived, token-free Job. NFD keeps its non-root
+worker and read-only mount. A new attempt removes the old snapshot before
+preflight; a failed run cannot leave an earlier positive result in that file.
+This asynchronous hardware label never replaces the dispatcher's admission gate.
 
-Uninstall removes only the boot configuration. Live bindings and CC mode are
-deliberately left alone — see the decisions below.
+Uninstall removes the boot configuration and NFD snapshot. Live bindings and
+CC mode are deliberately left alone — see the decisions below.
 
 ### Ordering
 
@@ -338,18 +342,13 @@ NVIDIA-shaped and populated only through the `NvidiaInBandCc` arm. Generalising
 them now would mean guessing at the shape of an implementation that, on current
 evidence, will not exist.
 
-### Grace superchips are a verify-only platform
+### Coherent attachment and CC capability are separate
 
-On C2C parts (GH200, GB200) confidential computing takes more than the GPU: the
-CPU has to support it too, and Grace does not. `pcilibs_rs::cc` refuses to
-enable CC on those ids, matching `gpu-admin-tools`, so this component never
-*sets* a mode there — there is no mode on that node to set. The provisioner
-still discovers, verifies, binds and labels, and refuses the node outright if
-the release asks for anything but `off`.
-
-This matters because GB200 NVL72 is a primary target of the device plugin.
-The provisioner must be honest that its CC stage is a no-op there rather than
-silently appearing to succeed.
+Hopper and Blackwell coherent GPUs cannot enable in-band CC. Coherent Rubin
+supports that transition according to pcilibs-rs, while still requiring the
+appropriate VFIO variant. Driver selection uses kernel module aliases; the
+library's C2C list prevents falling back to generic VFIO on coherent GPUs.
+Neither decision is inferred from the host CPU model.
 
 ### All GPUs on a node share one mode
 
@@ -506,12 +505,23 @@ only the device half, which over-matches two ids: `0x29bc` and `0x31c2` each
 have non-coherent subsystem variants. The consequence is a refusal on parts that
 would have been fine, chosen over silently mis-binding a coherent one.
 
-The alias table cannot tell "no variant driver exists" from "this kernel has not
-heard of it", but `pcilibs_rs::cc` can, because it already carries the C2C device ids to
-decide where no CC mode can be raised at all — the same set, since C2C is
-what makes the variant driver necessary. So a coherently attached GPU that
-resolves to plain `vfio-pci` is refused with the kernel named as the problem,
-and every other device keeps the fallback.
+The library keeps coherent attachment separate from in-band CC capability.
+A missing VFIO variant is an error even when that GPU supports CC transitions.
+
+### Fabric management belongs to the ServiceVM
+
+HGX profiles request `--bind-fabric` independently of GPU CC mode. Hx00 exposes
+direct NVSwitch functions; Bx00/Rx00 exposes ConnectX management PFs. The latter
+enter scope only after pcilibs-rs qualifies their VPD role or their relationship
+to a marked sibling PF. VFs and ordinary NICs remain excluded. A candidate
+node label cannot bypass this check.
+
+Management PFs share PCI IDs with ordinary NICs. Their boot configuration must
+therefore match individual BDFs as well as IDs, for generic and variant VFIO
+drivers alike. The udev rules set the override, detach an already-bound driver,
+then load and probe the VFIO driver. Address changes require reprovisioning.
+No live hardware is touched by tests; cold-boot and ServiceVM validation remain
+necessary on Bx00/Rx00 hardware.
 
 #### What was rejected
 

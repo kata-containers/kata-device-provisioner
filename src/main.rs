@@ -7,6 +7,7 @@ mod host;
 mod idle;
 mod mode;
 mod modules;
+mod nfd;
 mod nvidia;
 
 use std::collections::HashMap;
@@ -77,11 +78,15 @@ enum Command {
         #[arg(long)]
         mode: Mode,
 
+        /// Bind NVLink fabric management devices for assignment to a ServiceVM.
+        #[arg(long)]
+        bind_fabric: bool,
+
         #[command(flatten)]
         roots: Roots,
     },
 
-    /// Remove the boot configuration, leaving live devices unchanged.
+    /// Remove boot configuration and NFD facts, leaving live devices unchanged.
     Uninstall {
         #[command(flatten)]
         roots: Roots,
@@ -91,7 +96,11 @@ enum Command {
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Status { probe, all, roots } => status(probe, all, &roots.sysfs()),
-        Command::Apply { mode, roots } => apply(mode, &roots),
+        Command::Apply {
+            mode,
+            bind_fabric,
+            roots,
+        } => apply(mode, bind_fabric, &roots),
         Command::Uninstall { roots } => uninstall(&roots),
     }
 }
@@ -116,6 +125,7 @@ fn status(probe: bool, all: bool, sysfs: &Sysfs) -> Result<()> {
         let provisioning = match state.provisioning() {
             Some(Provisioning::NvidiaInBandCc) => "nvidia-in-band-cc",
             Some(Provisioning::NvidiaInBandPpcie) => "nvidia-in-band-ppcie",
+            Some(Provisioning::FabricManagement) => "fabric-management",
             None => "out-of-scope",
         };
         let cc = match (&state.cc_mode, state.cc_chip) {
@@ -156,7 +166,8 @@ fn status(probe: bool, all: bool, sysfs: &Sysfs) -> Result<()> {
     Ok(())
 }
 
-fn apply(mode: Mode, roots: &Roots) -> Result<()> {
+fn apply(mode: Mode, bind_fabric: bool, roots: &Roots) -> Result<()> {
+    nfd::remove(&roots.host_root)?;
     let sysfs = roots.sysfs();
 
     host::check(&sysfs)?;
@@ -168,11 +179,13 @@ fn apply(mode: Mode, roots: &Roots) -> Result<()> {
 
     // Across every device before any is touched: refuse whole, not half.
     verify_capable(&states, mode)?;
+    verify_fabric(&states, bind_fabric)?;
 
-    let passthrough = passthrough_set(&states, mode);
+    let passthrough = passthrough_set(&states, mode, bind_fabric);
 
     // Before any reset, so a missing driver is not found out half way through.
     let drivers = resolve_drivers(&sysfs, roots, &passthrough)?;
+    verify_bindable(&sysfs, &passthrough, &drivers)?;
 
     // Re-read in `nvidia::apply`: hardware may change after this safety check.
     let unreadable = nvidia::probe_modes(&mut states);
@@ -197,7 +210,7 @@ fn apply(mode: Mode, roots: &Roots) -> Result<()> {
 
     release(&sysfs, &states, &passthrough)?;
 
-    verify(&sysfs, mode, &passthrough, &drivers)?;
+    verify_and_publish(roots, mode, &passthrough, &drivers)?;
 
     println!(
         "node provisioned: mode={mode}, {} devices",
@@ -231,22 +244,28 @@ fn release(sysfs: &Sysfs, states: &[DeviceState], passthrough: &[DeviceState]) -
     Ok(())
 }
 
-/// Only PPCIE gives one guest the whole baseboard; the other modes are
-/// single-GPU, where taking the switches off the host would strand them.
-fn passthrough_set(states: &[DeviceState], mode: Mode) -> Vec<DeviceState> {
+fn verify_fabric(states: &[DeviceState], bind_fabric: bool) -> Result<()> {
+    if bind_fabric && !states.iter().any(DeviceState::is_fabric) {
+        bail!("fabric binding requested but no NVSwitch or qualified management PF was found");
+    }
+    Ok(())
+}
+
+/// A ServiceVM needs the fabric even when workload GPUs use per-GPU CC.
+fn passthrough_set(states: &[DeviceState], mode: Mode, bind_fabric: bool) -> Vec<DeviceState> {
     states
         .iter()
-        .filter(|state| {
-            mode == Mode::Ppcie || state.provisioning() != Some(Provisioning::NvidiaInBandPpcie)
-        })
+        .filter(|state| bind_fabric || mode == Mode::Ppcie || !state.is_fabric())
         .cloned()
         .collect()
 }
 
-/// The fallback to `vfio-pci` is right for an ordinary PCIe GPU and wrong for
-/// a coherently attached one, which would reach a VM with its memory missing.
+/// A generic mapping must not leave a known coherent GPU's memory inaccessible.
 fn verify_variant_available(state: &DeviceState, module: &str) -> Result<()> {
-    if !cc::is_c2c(state.device_id) || module.replace('-', "_") != "vfio_pci" {
+    if state.provisioning() != Some(Provisioning::NvidiaInBandCc)
+        || !cc::is_c2c(state.device_id)
+        || module.replace('-', "_") != "vfio_pci"
+    {
         return Ok(());
     }
 
@@ -293,6 +312,22 @@ fn resolve_drivers(
     Ok(drivers)
 }
 
+/// Reject host-owned devices before a GPU mode change can leave a partial run.
+fn verify_bindable(
+    sysfs: &Sysfs,
+    states: &[DeviceState],
+    drivers: &HashMap<String, VfioDriver>,
+) -> Result<()> {
+    for state in states {
+        if let Some(current) = vfio::current_driver(sysfs, &state.address) {
+            if current != drivers[&state.address].driver {
+                bail!("{}: held by {current}; stop its host services and unbind it before provisioning", state.address);
+            }
+        }
+    }
+    Ok(())
+}
+
 fn persist(
     host_root: &Path,
     states: &[DeviceState],
@@ -306,6 +341,7 @@ fn persist(
             device: state.device_id,
             module: drivers[&state.address].module.clone(),
             driver: drivers[&state.address].driver.clone(),
+            address_scoped: state.provisioning() == Some(Provisioning::FabricManagement),
         })
         .collect();
 
@@ -341,7 +377,10 @@ fn verify_capable(states: &[DeviceState], mode: Mode) -> Result<()> {
 
     let incapable: Vec<String> = states
         .iter()
-        .filter(|state| state.provisioning() == Some(Provisioning::NvidiaInBandCc))
+        .filter(|state| {
+            state.provisioning() == Some(Provisioning::NvidiaInBandCc)
+                || (mode == Mode::Ppcie && state.is_fabric())
+        })
         .filter(|state| !capable(state))
         .map(|state| format!("{} ({})", state.address, state.device_name))
         .collect();
@@ -360,7 +399,10 @@ fn verify_capable(states: &[DeviceState], mode: Mode) -> Result<()> {
         let grace_attached: Vec<String> = states
             .iter()
             .filter(|state| state.provisioning() == Some(Provisioning::NvidiaInBandCc))
-            .filter(|state| cc::is_c2c(state.device_id))
+            .filter(|state| {
+                cc::is_c2c(state.device_id)
+                    && cc::chip_for(state.device_id).is_some_and(|chip| !chip.c2c_cc_supported)
+            })
             .map(|state| format!("{} ({})", state.address, state.device_name))
             .collect();
 
@@ -429,6 +471,16 @@ fn verify(
     Ok(())
 }
 
+fn verify_and_publish(
+    roots: &Roots,
+    mode: Mode,
+    states: &[DeviceState],
+    drivers: &HashMap<String, VfioDriver>,
+) -> Result<()> {
+    verify(&roots.sysfs(), mode, states, drivers)?;
+    nfd::publish(&roots.host_root, states.iter().any(DeviceState::is_fabric))
+}
+
 /// Busy devices block only runs that would change them, so converged nodes can
 /// be upgraded while Kata workloads are running.
 fn writable(
@@ -479,9 +531,10 @@ fn verify_idle(roots: &Roots, sysfs: &Sysfs, states: &[DeviceState]) -> Result<(
 }
 
 fn uninstall(roots: &Roots) -> Result<()> {
+    nfd::remove(&roots.host_root)?;
     modules::unpersist(&roots.host_root)?;
 
-    println!("boot configuration removed; live bindings and CC mode left unchanged");
+    println!("boot configuration and NFD facts removed; live bindings and CC mode left unchanged");
     Ok(())
 }
 
@@ -495,6 +548,7 @@ fn in_scope(sysfs: &Sysfs) -> Result<Vec<DeviceState>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::device::tests::managed_fabric_node;
     use pcilibs_rs::cc::CcMode;
     use pcilibs_rs::testfs::{self, Fake};
     use rstest::{fixture, rstest};
@@ -506,6 +560,7 @@ mod tests {
     const A100: (u16, u32) = (0x20b0, 0x030200);
     const NVSWITCH: (u16, u32) = (0x22a3, 0x068000);
     const GH200: (u16, u32) = (0x2342, 0x030200);
+    const RUBIN_C2C: (u16, u32) = (0x3041, 0x030200);
     const GB200: (u16, u32) = (0x2941, 0x030200);
 
     #[fixture]
@@ -562,7 +617,7 @@ mod tests {
             .collect::<Vec<_>>();
         let states = node(&sysfs, &board);
 
-        let passthrough = passthrough_set(&states, mode);
+        let passthrough = passthrough_set(&states, mode, false);
 
         assert_eq!(states.len(), 12);
         assert_eq!(passthrough.len(), expected);
@@ -587,14 +642,19 @@ mod tests {
             sysfs.add_device(&address, Some(driver));
         }
 
-        release(&sysfs.sysfs, &states, &passthrough_set(&states, mode)).unwrap();
+        release(
+            &sysfs.sysfs,
+            &states,
+            &passthrough_set(&states, mode, false),
+        )
+        .unwrap();
 
         let unbound = sysfs.driver_unbind(bound.unwrap_or("vfio-pci")) == address;
         assert_eq!(unbound, released);
     }
 
     #[rstest]
-    fn uninstall_removes_only_boot_configuration(sysfs: Fake) {
+    fn uninstall_removes_boot_configuration_and_facts(sysfs: Fake) {
         let address = "0000:65:00.0";
         sysfs.add_driver("vfio-pci");
         sysfs.add_pci_device(address, 0x10de, H100.0, H100.1, Some("vfio-pci"));
@@ -605,6 +665,7 @@ mod tests {
         modules::persist(
             host.path(),
             &[modules::Claim {
+                address_scoped: false,
                 address: address.to_string(),
                 vendor: 0x10de,
                 device: H100.0,
@@ -614,6 +675,7 @@ mod tests {
         )
         .unwrap();
 
+        nfd::publish(host.path(), true).unwrap();
         uninstall(&Roots {
             sysfs: sysfs.root().to_path_buf(),
             proc: proc_root.path().to_path_buf(),
@@ -623,6 +685,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(sysfs.driver_unbind("vfio-pci"), "");
+        assert!(!host.path().join(nfd::FILE).exists());
         assert!(!host
             .path()
             .join("etc/modprobe.d/kata-device-provisioner.conf")
@@ -661,7 +724,7 @@ mod tests {
         let writable = writable(
             &sysfs.sysfs,
             &states,
-            &passthrough_set(&states, Mode::On),
+            &passthrough_set(&states, Mode::On, false),
             &HashMap::from([(address.to_string(), vfio_pci())]),
             Mode::On,
             &HashMap::new(),
@@ -692,7 +755,7 @@ mod tests {
         sysfs.add_device(&address, bound);
         states[0].cc_mode = cc;
 
-        let passthrough = passthrough_set(&states, Mode::On);
+        let passthrough = passthrough_set(&states, Mode::On, false);
         let drivers = HashMap::from([(address.clone(), vfio_pci())]);
 
         let writable = writable(
@@ -720,7 +783,7 @@ mod tests {
         let writable = writable(
             &sysfs.sysfs,
             &states,
-            &passthrough_set(&states, Mode::On),
+            &passthrough_set(&states, Mode::On, false),
             &HashMap::from([(address, vfio_pci())]),
             Mode::On,
             &unreadable,
@@ -735,7 +798,7 @@ mod tests {
         let states = node(&sysfs, &[NVSWITCH]);
         sysfs.add_device(&states[0].address, Some("vfio-pci"));
 
-        let passthrough = passthrough_set(&states, Mode::Off);
+        let passthrough = passthrough_set(&states, Mode::Off, false);
         assert!(passthrough.is_empty(), "off leaves the switch on the host");
 
         let writable = writable(
@@ -769,11 +832,60 @@ mod tests {
         assert_eq!(target_of(&states, &states[0].address, mode), expected);
     }
 
+    #[rstest]
+    #[case::pcie_gpu(H100)]
+    #[case::coherent_gpu(GB200)]
+    #[case::rubin_gpu(RUBIN_C2C)]
+    #[case::switch(NVSWITCH)]
+    fn missing_vfio_mapping_stops_before_module_loading(sysfs: Fake, #[case] device: (u16, u32)) {
+        let states = node(&sysfs, &[device]);
+        let proc_root = tempfile::tempdir().unwrap();
+        let dev_vfio = tempfile::tempdir().unwrap();
+        let host = tempfile::tempdir().unwrap();
+        fs::create_dir_all(proc_root.path().join("sys/kernel")).unwrap();
+        fs::write(
+            proc_root.path().join("sys/kernel/osrelease"),
+            "test-kernel\n",
+        )
+        .unwrap();
+        let modules = host.path().join("lib/modules/test-kernel");
+        fs::create_dir_all(&modules).unwrap();
+        fs::write(
+            modules.join("modules.alias"),
+            "alias vfio_pci:v*d*sv*sd*bc*sc*i* vfio_pci\n",
+        )
+        .unwrap();
+
+        let err = resolve_drivers(
+            &sysfs.sysfs,
+            &roots(&sysfs, &proc_root, &dev_vfio, &host),
+            &states,
+        )
+        .err()
+        .expect("an unmapped device must fail before looking for modprobe");
+
+        let message = format!("{err:#}");
+        assert!(message.contains(&states[0].address), "{message}");
+        assert!(
+            message.contains("no device-specific VFIO module alias"),
+            "{message}"
+        );
+        assert_eq!(
+            err.root_cause()
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .kind(),
+            std::io::ErrorKind::NotFound
+        );
+    }
+
     /// The kernel names the variant module with underscores and sysfs names
     /// the driver with dashes, and either can reach this.
     #[rstest]
     #[case::grace_hopper(GH200, "nvgrace_gpu_vfio_pci", true)]
     #[case::grace_blackwell(GB200, "nvgrace-gpu-vfio-pci", true)]
+    #[case::rubin_c2c(RUBIN_C2C, "nvgrace_gpu_vfio_pci", true)]
+    #[case::rubin_missing_variant(RUBIN_C2C, "vfio_pci", false)]
     #[case::pcie_gpu_needs_no_variant(H100, "vfio-pci", true)]
     #[case::nvswitch_needs_no_variant(NVSWITCH, "vfio_pci", true)]
     #[case::grace_on_a_kernel_too_old(GH200, "vfio-pci", false)]
@@ -869,6 +981,8 @@ mod tests {
     #[case::grace_blackwell_on(GB200, Mode::On, false)]
     #[case::grace_blackwell_devtools(GB200, Mode::DevTools, false)]
     #[case::grace_blackwell_off(GB200, Mode::Off, true)]
+    #[case::rubin_c2c_can_enable_cc(RUBIN_C2C, Mode::On, true)]
+    #[case::rubin_c2c_can_enable_devtools(RUBIN_C2C, Mode::DevTools, true)]
     #[case::pcie_gpu_is_ours_to_set(H100, Mode::On, true)]
     fn refuses_to_raise_cc_where_the_cpu_cannot_back_it(
         sysfs: Fake,
@@ -879,5 +993,158 @@ mod tests {
         let states = node(&sysfs, &[device]);
 
         assert_eq!(verify_capable(&states, mode).is_ok(), expected);
+    }
+    #[rstest]
+    #[case::off(Mode::Off)]
+    #[case::on(Mode::On)]
+    #[case::devtools(Mode::DevTools)]
+    fn service_vm_binding_is_independent_of_cc_mode(sysfs: Fake, #[case] mode: Mode) {
+        let states = node(&sysfs, &[H100, NVSWITCH]);
+        verify_fabric(&states, true).unwrap();
+        assert_eq!(passthrough_set(&states, mode, true).len(), 2);
+    }
+
+    #[rstest]
+    fn a_candidate_label_cannot_authorize_an_ordinary_nic(sysfs: Fake) {
+        let _ = node(&sysfs, &[B200]);
+        sysfs.add_pci_device("0000:06:00.0", 0x15b3, 0x1021, 0x020700, None);
+        let states = in_scope(&sysfs.sysfs).unwrap();
+        assert!(verify_fabric(&states, true).is_err());
+        assert!(verify_fabric(&states, false).is_ok());
+    }
+
+    #[rstest]
+    #[case::blackwell(0x2901)]
+    #[case::rubin(0x3002)]
+    fn management_binding_and_persistence_exclude_ordinary_nics(
+        managed_fabric_node: Fake,
+        #[case] device: u16,
+    ) {
+        let fake = managed_fabric_node;
+        fake.add_pci_device("0000:40:00.0", 0x10de, device, 0x030200, None);
+        fake.add_driver("vfio-pci");
+        let states = in_scope(&fake.sysfs).unwrap();
+        verify_fabric(&states, true).unwrap();
+        verify_capable(&states, Mode::On).unwrap();
+        let targets = passthrough_set(&states, Mode::Off, true);
+        assert_eq!(targets.len(), 3);
+        assert_eq!(passthrough_set(&states, Mode::Off, false).len(), 1);
+        let drivers = targets
+            .iter()
+            .map(|s| (s.address.clone(), vfio_pci()))
+            .collect();
+        let host = tempfile::tempdir().unwrap();
+        persist(host.path(), &targets, &drivers).unwrap();
+        let options = fs::read_to_string(
+            host.path()
+                .join("etc/modprobe.d/kata-device-provisioner.conf"),
+        )
+        .unwrap();
+        assert!(!options.contains("15b3"));
+        let rules = fs::read_to_string(
+            host.path()
+                .join("etc/udev/rules.d/71-kata-device-provisioner.rules"),
+        )
+        .unwrap();
+        assert!(rules.contains("0000:05:00.0"));
+        assert!(rules.contains("0000:05:00.1"));
+        assert!(!rules.contains("0000:06:00.0"));
+        for state in targets.iter().filter(|s| s.is_fabric()) {
+            // The fixture records sysfs writes but has no kernel to complete the probe.
+            vfio::bind(&fake.sysfs, &state.address, "vfio-pci").unwrap();
+            assert!(vfio::verify_bound(&fake.sysfs, &state.address, "vfio-pci").is_err());
+            assert_eq!(fake.driver_override(&state.address).trim(), "vfio-pci");
+            fake.add_device(&state.address, Some("vfio-pci"));
+            vfio::verify_bound(&fake.sysfs, &state.address, "vfio-pci").unwrap();
+            nvidia::verify_mode(state, Mode::On).unwrap();
+        }
+        assert!(vfio::current_driver(&fake.sysfs, "0000:06:00.0").is_none());
+        assert!(vfio::current_driver(&fake.sysfs, "0000:05:00.2").is_none());
+    }
+    #[rstest]
+    #[case::host_owned(Some("mlx5_core"), false)]
+    #[case::unbound(None, true)]
+    #[case::already_bound(Some("vfio-pci"), true)]
+    fn binding_preflight_refuses_host_owned_management_pfs(
+        managed_fabric_node: Fake,
+        #[case] driver: Option<&str>,
+        #[case] accepted: bool,
+    ) {
+        let fake = managed_fabric_node;
+        fake.add_device("0000:05:00.0", driver);
+        let states = in_scope(&fake.sysfs).unwrap();
+        let drivers = states
+            .iter()
+            .map(|s| (s.address.clone(), vfio_pci()))
+            .collect();
+        assert_eq!(
+            verify_bindable(&fake.sysfs, &states, &drivers).is_ok(),
+            accepted
+        );
+        assert_eq!(fake.driver_override("0000:05:00.0").trim(), "");
+    }
+    #[rstest]
+    fn managed_fabric_cannot_take_ppcie(managed_fabric_node: Fake) {
+        let states = in_scope(&managed_fabric_node.sysfs).unwrap();
+        assert!(verify_capable(&states, Mode::Ppcie).is_err());
+    }
+    #[fixture]
+    fn empty_roots(sysfs: Fake) -> (Fake, TempDir, Roots) {
+        let host = tempfile::tempdir().unwrap();
+        let roots = Roots {
+            sysfs: sysfs.root().to_path_buf(),
+            proc: host.path().join("proc"),
+            dev_vfio: host.path().join("dev/vfio"),
+            host_root: host.path().to_path_buf(),
+        };
+        (sysfs, host, roots)
+    }
+
+    #[rstest]
+    fn failed_preflight_removes_a_previous_positive_fact(empty_roots: (Fake, TempDir, Roots)) {
+        let (_sysfs, host, roots) = empty_roots;
+        nfd::publish(host.path(), true).unwrap();
+        assert!(apply(Mode::Off, true, &roots).is_err());
+        assert!(!host.path().join(nfd::FILE).exists());
+    }
+
+    #[rstest]
+    #[case::all_management_pfs_bound(true)]
+    #[case::one_management_pf_unbound(false)]
+    fn nfd_publication_requires_verified_bindings(
+        managed_fabric_node: Fake,
+        #[case] all_bound: bool,
+    ) {
+        let fake = managed_fabric_node;
+        let states = in_scope(&fake.sysfs).unwrap();
+        let host = tempfile::tempdir().unwrap();
+        let roots = Roots {
+            sysfs: fake.root().to_path_buf(),
+            proc: host.path().join("proc"),
+            dev_vfio: host.path().join("dev/vfio"),
+            host_root: host.path().to_path_buf(),
+        };
+        fake.add_driver("vfio-pci");
+        for state in states.iter().take(if all_bound { states.len() } else { 1 }) {
+            fake.add_device(&state.address, Some("vfio-pci"));
+        }
+        let drivers = states
+            .iter()
+            .map(|s| (s.address.clone(), vfio_pci()))
+            .collect();
+        assert_eq!(
+            verify_and_publish(&roots, Mode::Off, &states, &drivers).is_ok(),
+            all_bound
+        );
+        assert_eq!(host.path().join(nfd::FILE).exists(), all_bound);
+    }
+
+    #[rstest]
+    fn an_ordinary_nic_cannot_produce_a_fabric_fact(sysfs: Fake) {
+        sysfs.add_pci_device("0000:06:00.0", 0x15b3, 0x1021, 0x020700, None);
+        let states = in_scope(&sysfs.sysfs).unwrap();
+        let host = tempfile::tempdir().unwrap();
+        nfd::publish(host.path(), states.iter().any(DeviceState::is_fabric)).unwrap();
+        assert!(!host.path().join(nfd::FILE).exists());
     }
 }

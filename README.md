@@ -50,17 +50,42 @@ GPU beside it gets plain `vfio-pci` without either being named in this tree.
 The variant drivers match on nothing but `driver_override`, which no modprobe
 file can write, so those devices are carried by the udev rule instead.
 
+HGX profiles enable `bindFabric: true` so direct NVSwitches on Hx00 and
+qualified ConnectX management PFs on Bx00/Rx00 can be assigned to a ServiceVM.
+For the CLI, use `apply --mode off --bind-fabric`. Stop host fabric services
+and unbind their management PFs first: the binding preflight refuses another
+driver before any GPU mode changes. Management PF persistence
+uses address-specific udev rules, including detaching a driver that bound before
+udev processed the boot event. Reprovision after PCI addresses change.
+`HGX-Rx00` defaults to CC off and accepts coherent Rubin variants independently
+of CPU type; hardware and ServiceVM validation remain pending.
+
+VPD discovery may require root even for `status` without `--probe`.
+
+NFD stays non-root: after verification, the provisioning Job publishes
+`feature.node.kubernetes.io/managed-fabric=true` when its VFIO set includes
+qualified fabric devices. NFD's existing `local` source reads the root-owned,
+world-readable file at
+`/etc/kubernetes/node-feature-discovery/features.d/kata-device-provisioner`.
+The Job replaces it atomically; every `apply` first removes the previous
+result, and `uninstall` removes it too. No raw VPD is published.
+
+Keep the `local` source enabled and its standard read-only host mount in NFD.
+Candidate labels select the initial provisioning run; the verified label is
+output, so initial selection cannot depend on it. It is a provisioning snapshot,
+not a live readiness check: reprovision after hardware or PCI address changes
+before admitting workloads. NFD publishes changes asynchronously; the dispatcher
+still gates workload admission on Job success, not this label.
+
 The work is driverless. CC mode is set in-band over BAR0 and the FSP mailbox
 via [`pcilibs_rs::cc`](https://github.com/kata-containers/pcilibs-rs), so the NVIDIA
 kernel driver never has to be present, and PCI/VFIO truth is read from sysfs
 via [`pcilibs-rs`](https://github.com/kata-containers/pcilibs-rs) — the same
 crate the device plugin uses to classify what it advertises.
 
-Which devices are in scope is one compile-time table keyed on PCI identity, so
-supporting another accelerator is one row. There is no vendor abstraction on
-purpose: TDISP devices (AMD SEV-TIO, Intel TDX Connect) are attested and locked
-to a VM at bind time by the platform, so they need no node-level mode at all —
-see [ARCHITECTURE.md](ARCHITECTURE.md).
+Which devices are in scope is a compile-time table plus shared VPD discovery
+for ConnectX management PFs. Ordinary NICs remain untouched even when they
+share a device ID with those PFs.
 
 ## What it does not do
 
@@ -90,16 +115,19 @@ kata-device-provisioner apply --mode on  # provision this node
 kata-device-provisioner uninstall        # remove the boot config
 ```
 
-`uninstall` leaves the live bindings and CC mode alone. It only stops the node
-from restoring the bindings after its next reboot.
+`uninstall` removes the NFD snapshot and stops the node from restoring bindings
+after its next reboot. Live bindings and CC mode stay unchanged.
 
 Every kernel path is a flag (`--sysfs`, `--proc`, `--dev-vfio`,
 `--host-root`), so the whole thing can be exercised against a directory tree
 instead of a node.
 
 The node needs an IOMMU enabled on the kernel command line and `kmod`
-installed; `vfio-pci` is loaded for you on the first run, using the host's own
-`modprobe`.
+installed. Every selected device needs a device-specific VFIO mapping in the
+kernel's `modules.alias`; an absent mapping stops provisioning before mode
+changes or binding. The generic VFIO catch-all is insufficient, including for
+ordinary PCIe GPUs and switches. Matching modules are loaded through the host's
+own `modprobe`.
 
 ## Deploying it
 
@@ -137,8 +165,8 @@ Each enabled mode gets a dispatcher run of its own, and `ccMode` covers the
 rest. The label is read when a rollout starts, so editing it takes effect on the
 next `helm upgrade` — nothing watches it.
 
-`helm uninstall` removes the boot configuration and releases the devices; it
-leaves CC mode alone, because reverting it costs a GPU reset per device.
+`helm uninstall` removes the boot configuration and NFD snapshot; live bindings
+and CC mode stay unchanged.
 
 The per-node Jobs are privileged and share the host's PID namespace, so on a
 cluster that enforces Pod Security the namespace needs to allow it:

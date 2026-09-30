@@ -88,6 +88,7 @@ pub struct Claim {
     pub device: u16,
     pub module: String,
     pub driver: String,
+    pub address_scoped: bool,
 }
 
 /// The variants register an `override_only` alias, so they match nothing until
@@ -130,7 +131,28 @@ pub fn persist(host_root: &Path, claims: &[Claim]) -> Result<Vec<String>> {
         {
             modules.push(&claim.module);
         }
-        if needs_driver_override(&claim.module) {
+        if claim.address_scoped {
+            // Management PFs can share a device ID with ordinary network NICs.
+            let address = pcilibs_rs::normalize_bdf(&claim.address)
+                .with_context(|| format!("invalid PCI address {}", claim.address))?;
+            let selector = format!(
+                "ACTION==\"add\", SUBSYSTEM==\"pci\", KERNEL==\"{address}\", ATTR{{vendor}}==\"0x{:04x}\", ATTR{{device}}==\"0x{:04x}\"",
+                claim.vendor, claim.device
+            );
+            // mlx5 may bind before udev processes the add event.
+            rules.push(format!(
+                "{selector}, DRIVER==\"?*\", DRIVER!=\"{}\", ATTR{{driver_override}}=\"{}\", ATTR{{driver/unbind}}=\"{address}\"\n",
+                claim.driver, claim.driver
+            ));
+            rules.push(
+                udev_rule(claim.vendor, claim.device, &claim.module, &claim.driver).replacen(
+                    "SUBSYSTEM==\"pci\",",
+                    &format!("SUBSYSTEM==\"pci\", KERNEL==\"{address}\","),
+                    1,
+                ),
+            );
+            overridden.push(address);
+        } else if needs_driver_override(&claim.module) {
             overridden.push(claim.address.clone());
             rules.push(udev_rule(
                 claim.vendor,
@@ -144,8 +166,8 @@ pub fn persist(host_root: &Path, claims: &[Claim]) -> Result<Vec<String>> {
     }
     ids.sort();
     ids.dedup();
-    rules.sort();
-    rules.dedup();
+    let mut seen_rules = std::collections::HashSet::new();
+    rules.retain(|rule| seen_rules.insert(rule.clone()));
 
     write(
         &host_root.join(MODULES_LOAD),
@@ -276,6 +298,7 @@ mod tests {
     fn claim(address: &str, device: u16, module: &str) -> Claim {
         Claim {
             address: address.to_string(),
+            address_scoped: false,
             vendor: 0x10de,
             device,
             module: module.to_string(),
@@ -423,5 +446,42 @@ mod tests {
 
         assert!(!host.path().join(MODULES_LOAD).exists());
         assert!(!host.path().join(MODPROBE).exists());
+    }
+    #[rstest]
+    #[case::generic("vfio_pci", "vfio-pci")]
+    #[case::variant("mlx5_vfio_pci", "mlx5-vfio-pci")]
+    fn management_rules_claim_only_selected_addresses(
+        host: TempDir,
+        #[case] module: &str,
+        #[case] driver: &str,
+    ) {
+        let claims: Vec<_> = ["0000:05:00.0", "0000:05:00.1"]
+            .into_iter()
+            .map(|address| Claim {
+                address: address.to_string(),
+                vendor: 0x15b3,
+                device: 0x1021,
+                module: module.to_string(),
+                driver: driver.to_string(),
+                address_scoped: true,
+            })
+            .collect();
+        assert_eq!(persist(host.path(), &claims).unwrap().len(), 2);
+        assert!(read(&host, MODPROBE).is_empty());
+        let rules = read(&host, UDEV_RULES);
+        assert_eq!(rules.lines().count(), 4);
+        for (index, line) in rules.lines().enumerate() {
+            let address = &claims[index / 2].address;
+            assert!(line.contains(&format!("KERNEL==\"{address}\"")));
+            assert!(line.contains("ATTR{vendor}==\"0x15b3\""));
+            assert!(line.contains("ATTR{device}==\"0x1021\""));
+            if index % 2 == 0 {
+                assert!(line.contains("ATTR{driver/unbind}"));
+            } else {
+                assert!(line.contains(&format!("kmod load {module}")));
+                assert!(line.contains("drivers_probe"));
+            }
+        }
+        println!("{rules}");
     }
 }

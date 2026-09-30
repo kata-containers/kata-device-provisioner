@@ -26,24 +26,39 @@ CI does the same on every pull request and fails if the index is out of date.
 | [`HGX-Hx00-PPCIE`](HGX-Hx00-PPCIE.values.yaml) | HGX Hx00 | `ppcie`, whole board |
 | [`HGX-Bx00`](HGX-Bx00.values.yaml) | HGX Bx00 (B200, B300) | `off` |
 | [`HGX-Bx00-CC`](HGX-Bx00-CC.values.yaml) | HGX Bx00 | `on` — single-GPU and multi-GPU |
+| [`HGX-Rx00`](HGX-Rx00.values.yaml) | Rubin with ConnectX-managed NVLink fabric, including coherent variants | `off` |
 | [`PCIE-GPU`](PCIE-GPU.values.yaml) | discrete cards, no NVSwitch | `off` |
 | [`PCIE-GPU-CC`](PCIE-GPU-CC.values.yaml) | discrete cards, no NVSwitch | `on`, per GPU |
 | [`GBx00`](GBx00.values.yaml) | Grace-Blackwell superchips (GB200, GB300) | `off` |
 | [`MIXED-FLEET`](MIXED-FLEET.values.yaml) | several of the above, in one release | per profile |
 
-Profiles are per chip generation, not per SKU: `HGX-Hx00` matches any GH100
-board (an H100, H200, H800 or H20 baseboard looks the same from PCI config
-space) and `HGX-Bx00` matches any GB100/GB110 board (B200 or B300), so one
-release covers a fleet mixing them without a profile per part number. The
-baseboard is the same regardless of which OEM (Supermicro, Lenovo, ...)
-builds it, so nothing here selects on that either.
+Profiles select hardware candidates without OEM names. HGX Hx00 uses direct
+NVSwitch PCI functions. Bx00 and Rx00 use ConnectX management PFs; an ordinary
+NIC is never enough to authorize binding. The library qualifies those PFs
+through VPD, including sibling PFs, and excludes VFs.
 
-GH200 and GB200/GB300 fall inside those same chip families but are explicitly
-excluded from both, because a Grace superchip is a different machine from an
-HGX baseboard: its GPUs are coherently attached and CC needs support from the
-CPU as well, which Grace has not got. GB200/GB300 have [`GBx00`](GBx00.values.yaml)
-instead, which binds for passthrough and leaves CC off. GH200 has no profile
-yet.
+HGX profiles set `bindFabric: true`, which passes `--bind-fabric` to the binary.
+Stop host fabric services and unbind their management PFs before the first run;
+a conflicting driver is refused before GPU mode changes.
+This binds fabric management devices even with CC off or on, so they can be
+assigned to a ServiceVM. A run requesting fabric binding fails before mutation
+if no qualified fabric device is found. PPCIE continues to bind the whole
+Hopper board for a single CVM.
+
+The Rx00 profile does not select by CPU type. Coherent Rubin GPUs still require
+a suitable VFIO variant from the running kernel; their in-band CC capability
+is separate. The profile defaults to CC off. Rx00 hardware and ServiceVM
+passthrough validation remain pending.
+
+NFD cannot check the VPD role here. Its managed-fabric candidate label combines
+GPU family with Mellanox PCI presence. A discrete GPU plus an ordinary NIC can
+therefore be selected, but runtime discovery refuses fabric binding. Such a
+PCIe node needs explicit node selection with the PCIe profile. Avoid enabling
+overlapping profiles on a heterogeneous node.
+
+Management PF boot rules match PCI address as well as vendor/device IDs because
+ordinary NICs can share those IDs. Reprovision after PCI address changes; these
+rules deliberately do not follow a management function to an unknown address.
 
 ```sh
 helm install kata-device-provisioner deploy/helm/kata-device-provisioner \
@@ -61,9 +76,8 @@ A cluster holding more than one kind of GPU node takes one release with a
 profile enabled per hardware class, each its own run with its own selection,
 mode and pacing. [`MIXED-FLEET`](MIXED-FLEET.values.yaml) is that file with
 every block commented out: uncomment the classes the fleet has, at most one
-mode per class. Their selections cannot collide — the HGX profiles require an
-NVSwitch, the discrete-card ones refuse a node that has one, and both exclude
-Grace superchips by device id — so the runs never contend for a node.
+mode per class. PCIe profiles exclude direct switches, managed-fabric
+candidates, and coherent GPUs to avoid competing with the HGX profiles.
 
 ## The modes, and NVIDIA's
 
@@ -116,7 +130,7 @@ A line per device:
 
 ```text
 0000:0a:00.0  0x10de:2330  class=0x030200  nvidia-in-band-cc  chip=GH100  driver=<unbound>   iommu_group=14  numa=0  cc=capable  GH100 [H100 SXM5 80GB]
-0000:06:00.0  0x10de:22a3  class=0x068000  bind-only          chip=-      driver=<unbound>   iommu_group=9   numa=0  cc=n/a      GH100 [NVSwitch]
+0000:06:00.0  0x10de:22a3  class=0x068000  nvidia-in-band-ppcie chip=-      driver=<unbound>   iommu_group=9   numa=0  cc=n/a      GH100 [NVSwitch]
 0000:01:00.0  0x8086:1521  class=0x020000  out-of-scope       chip=-      driver=igb         iommu_group=3   numa=0  cc=n/a      I350 Gigabit Network Connection
 ```
 
@@ -125,14 +139,14 @@ Four fields decide everything:
 - **`chip`** — the GPU generation `pcilibs_rs::cc` recognises, and the answer to "can
   this GPU do confidential computing". `GH100` is Hopper, `GB1xx` Blackwell.
   A `-` on a line that says `nvidia-in-band-cc` is a GPU too old for CC.
-- **`nvidia-in-band-cc` / `bind-only` / `out-of-scope`** — what the device table
-  says this component may do. `bind-only` is an NVSwitch under per-GPU CC: passed
-  through, but it has no CC mode of its own. Under PPCIE the same device is a
-  participant. `out-of-scope` devices are listed and never touched.
-- **device id and NVSwitches** — a GH100 id (`2330`, ...) plus an NVSwitch is
-  HGX Hx00; a GB100/GB110 id (`2901`, ...) plus an NVSwitch is HGX Bx00;
-  NVIDIA GPUs and no NVSwitch is a PCIE-GPU node. A GB200/GB300 id is GBx00,
-  and a GH200 id is none of these — see below.
+- **Provisioning role** — `nvidia-in-band-cc` identifies GPUs,
+  `nvidia-in-band-ppcie` direct switches, and `fabric-management` qualified
+  ConnectX management PFs. `out-of-scope` devices are never touched.
+
+- **Fabric interface** — direct NVSwitches provide the Hx00 path; qualified
+  ConnectX management PFs provide the Bx00/Rx00 path. GPU identity refines the
+  family; an ordinary NIC does not establish an NVLink fabric.
+
 - **`iommu_group`** — every device you intend to pass through needs one. If
   these are missing the IOMMU is off, and `apply` will refuse the node.
 
@@ -165,9 +179,8 @@ Three things that are *not* heterogeneity in this sense:
   are both settable, so the node provisions. Mode is per GPU.
 - **NVSwitches.** They have no per-GPU CC mode; they are bound, and under PPCIE
   they take the board's mode.
-- **Anything not NVIDIA.** An AMD GPU or a passthrough-capable NIC has no row in
-  the device table, so it is reported by `status --all` and never touched. It
-  does not make the node mixed.
+- **Unrelated devices.** AMD GPUs and ordinary NICs remain out of scope.
+  ConnectX management PFs are bind-only and do not need a GPU CC capability.
 
 For a fleet that really does have older GPUs on some nodes, give those nodes
 `ccMode: off` — they still get bound to `vfio-pci` and are still usable for
@@ -187,25 +200,19 @@ config space via node-feature-discovery, so they survive binding. The chart
 ships the NodeFeatureRule that produces them (`nodeFeatureRule.enabled`); NFD
 itself has to be in the cluster already, which kata-deploy can arrange.
 
-`nvidia-gpu` and `nvidia-nvswitch` are vendor and PCI class. `nvidia-hopper` and
-`nvidia-blackwell` are chip generations, matched on the device-id ranges
-`pcilibs_rs::cc`'s `CHIPS` table already tracks (GH100 for Hopper, GB100 and
-GB110 for Blackwell) rather than one id per SKU, so a fleet mixing H100 and
-H200, or B200 and B300, is one release. A generation this tree does not know
-about yet means a node is not selected; the provisioner still reads the
-hardware and refuses a mode the board cannot take.
+`nvidia-gpu` and `nvidia-nvswitch` match vendor and PCI class. GPU-family
+labels use the ranges maintained by pcilibs-rs. The Hopper and Blackwell HGX
+selectors exclude their coherent variants; `GBx00` retains its separate policy.
+`nvidia-rubin` includes coherent variants because attachment does not determine
+whether Rubin can enable CC.
 
-Both rules carve the C2C ids back out of their range (`pcilibs_rs::cc::
-C2C_DEVIDS`): GH200 out of Hopper, GB200 and GB300 out of Blackwell. Those are
-Grace superchips, which the baseboard profiles would provision wrongly on two
-counts — a coherently attached GPU needs `nvgrace_gpu_vfio_pci`, and no CC mode
-can be raised on a node whose CPU has no CC of its own.
+`nvidia-managed-fabric-candidate` is a selection hint, never proof of a
+management role. `nvidia-c2c` excludes coherent variants, including Rubin, from
+the PCIe profiles. VPD qualification and VFIO driver resolution happen on the
+selected host through pcilibs-rs and the kernel's module aliases.
 
-`nvidia-c2c` names the same ids outright, so the `PCIE-GPU` profiles can
-exclude them: their base match, `nvidia-gpu`, is not range-restricted the way
-the generation labels are, and a superchip has no NVSwitch either, so one would
-otherwise pass their "add-in card" test.
-
-`nvidia-grace-blackwell` is the GB200/GB300 half of that same list, which is
-what `GBx00` selects. GH200 has no equivalent label, because nothing selects on
-it yet.
+After successful fabric provisioning, NFD's `local` source publishes
+`feature.node.kubernetes.io/managed-fabric=true` from the provisioner's feature
+file. This covers both direct NVSwitches and qualified ConnectX management PFs
+without granting the NFD worker VPD access. Keep candidate selectors for initial
+provisioning: a verified output cannot select the Job that creates it.

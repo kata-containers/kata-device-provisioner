@@ -13,10 +13,11 @@ use pcilibs_rs::Sysfs;
 /// A TDISP device (SEV-TIO, TDX Connect) needs no variant here: it locks to a
 /// VM at bind time, so there is no node-level mode to set.
 pub enum Provisioning {
-    /// NVIDIA Hopper and Blackwell.
+    /// GPUs with an in-band CC interface.
     NvidiaInBandCc,
     /// NVSwitch: no CC mode of its own, but carries the baseboard's PPCIE mode.
     NvidiaInBandPpcie,
+    FabricManagement,
 }
 
 /// `nvidia.com/cc.*` is NVIDIA's contract; kata-deploy's selectors key off it.
@@ -43,6 +44,24 @@ pub struct DeviceRow {
 /// A device with no row is never touched. The identities match
 /// kata-device-plugin's, so the two cannot disagree about what a device is.
 pub const DEVICES: &[DeviceRow] = &[
+    DeviceRow {
+        vendor: 0x15b3,
+        class_prefix: 0x0207,
+        provisioning: Provisioning::FabricManagement,
+        cc_labels: None,
+    },
+    DeviceRow {
+        vendor: 0x15b3,
+        class_prefix: 0x0200,
+        provisioning: Provisioning::FabricManagement,
+        cc_labels: None,
+    },
+    DeviceRow {
+        vendor: 0x10de,
+        class_prefix: 0x0300,
+        provisioning: Provisioning::NvidiaInBandCc,
+        cc_labels: Some(&NVIDIA_CC_LABELS),
+    },
     // NVIDIA GPU: 3D controller.
     DeviceRow {
         vendor: 0x10de,
@@ -110,8 +129,15 @@ impl DeviceState {
         match self.provisioning() {
             Some(Provisioning::NvidiaInBandCc) => nvidia::supports_ppcie(self.device_id),
             Some(Provisioning::NvidiaInBandPpcie) => true,
-            None => false,
+            Some(Provisioning::FabricManagement) | None => false,
         }
+    }
+
+    pub fn is_fabric(&self) -> bool {
+        matches!(
+            self.provisioning(),
+            Some(Provisioning::NvidiaInBandPpcie | Provisioning::FabricManagement)
+        )
     }
 
     /// Empty until the mode is known: an unprobed run must not claim CC-ready.
@@ -135,18 +161,26 @@ impl DeviceState {
     }
 }
 
-/// Sorted by PCI address. Pure sysfs: no root, no BAR0, no device wake-up.
+/// VPD may require root; discovery never opens device registers.
 pub fn discover(sysfs: &Sysfs) -> Result<Vec<DeviceState>> {
     let manager = PCIDeviceManager::new(sysfs.clone());
     let devices = manager
         .get_all_devices(None)
         .with_context(|| format!("enumerate PCI devices under {}", sysfs.devices().display()))?;
 
+    let topology = pcilibs_rs::platform::discover_topology(sysfs)?;
+
     Ok(devices
         .into_iter()
         .filter(|dev| is_passthrough_capable_class(dev.class))
         .map(|dev| {
-            let row = row_for(dev.vendor, dev.class);
+            let row = row_for(dev.vendor, dev.class).filter(|row| {
+                row.provisioning != Provisioning::FabricManagement
+                    || topology
+                        .management_functions
+                        .iter()
+                        .any(|pf| pf.bdf == dev.address)
+            });
             DeviceState {
                 vendor: dev.vendor,
                 device_id: dev.device,
@@ -158,7 +192,8 @@ pub fn discover(sysfs: &Sysfs) -> Result<Vec<DeviceState>> {
                 row,
                 cc_chip: match row.map(|row| row.provisioning) {
                     Some(Provisioning::NvidiaInBandCc) => nvidia::cc_chip(dev.device),
-                    Some(Provisioning::NvidiaInBandPpcie) | None => None,
+                    Some(Provisioning::NvidiaInBandPpcie | Provisioning::FabricManagement)
+                    | None => None,
                 },
                 cc_mode: None,
                 ppcie_mode: None,
@@ -169,7 +204,7 @@ pub fn discover(sysfs: &Sysfs) -> Result<Vec<DeviceState>> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use pcilibs_rs::testfs::{self, Fake};
     use rstest::{fixture, rstest};
@@ -206,7 +241,7 @@ mod tests {
     )]
     #[case::pre_cc_gpu(0x10de, 0x20b0, 0x030200, Some(Provisioning::NvidiaInBandCc), None)]
     #[case::nvswitch(0x10de, 0x22a3, 0x068000, Some(Provisioning::NvidiaInBandPpcie), None)]
-    #[case::display_gpu(0x10de, 0x25b2, 0x030000, None, None)]
+    #[case::display_gpu(0x10de, 0x25b2, 0x030000, Some(Provisioning::NvidiaInBandCc), None)]
     #[case::amd_gpu(0x1002, 0x74a1, 0x030200, None, None)]
     #[case::intel_nic(0x8086, 0x1521, 0x020000, None, None)]
     fn table_decides_what_is_in_scope(
@@ -336,5 +371,60 @@ mod tests {
     #[rstest]
     fn empty_node_discovers_nothing(sysfs: Fake) {
         assert!(discover(&sysfs.sysfs).unwrap().is_empty());
+    }
+
+    #[fixture]
+    pub(crate) fn managed_fabric_node() -> Fake {
+        let fake = testfs::fake();
+        for (bdf, marker) in [
+            ("0000:05:00.0", true),
+            ("0000:05:00.1", false),
+            ("0000:06:00.0", false),
+            ("0000:05:00.2", true),
+        ] {
+            fake.add_pci_device(bdf, 0x15b3, 0x1021, 0x020700, None);
+            if marker {
+                std::fs::write(
+                    fake.device(bdf).join("vpd"),
+                    b"\x90\x0e\x00VA\x0bSMDL=SW_MNG\x78",
+                )
+                .unwrap();
+            }
+        }
+        std::os::unix::fs::symlink(
+            fake.device("0000:05:00.0"),
+            fake.device("0000:05:00.2").join("physfn"),
+        )
+        .unwrap();
+        fake
+    }
+
+    #[rstest]
+    fn only_qualified_management_pfs_enter_scope(managed_fabric_node: Fake) {
+        let states = discover(&managed_fabric_node.sysfs).unwrap();
+        let scoped: Vec<_> = states.iter().filter(|state| state.in_scope()).collect();
+        assert_eq!(
+            scoped
+                .iter()
+                .map(|state| state.address.as_str())
+                .collect::<Vec<_>>(),
+            ["0000:05:00.0", "0000:05:00.1"]
+        );
+        for state in scoped {
+            assert_eq!(state.provisioning(), Some(Provisioning::FabricManagement));
+            assert!(!state.cc_capable());
+            assert!(!state.carries_ppcie());
+            assert!(state.cc_label_values().is_empty());
+        }
+    }
+
+    #[rstest]
+    fn unreadable_management_identity_stops_discovery(managed_fabric_node: Fake) {
+        std::fs::write(
+            managed_fabric_node.device("0000:05:00.0").join("vpd"),
+            [0x90],
+        )
+        .unwrap();
+        assert!(discover(&managed_fabric_node.sysfs).is_err());
     }
 }
