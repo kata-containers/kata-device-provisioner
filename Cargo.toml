@@ -20,10 +20,10 @@ libc = "0.2"
 # FSP mailbox, needing no NVIDIA kernel driver.
 #
 # Shared fabric discovery is pinned until pcilibs-rs #26 lands.
-pcilibs-rs = { git = "https://github.com/kata-containers/pcilibs-rs", rev = "5fa0bfd5055dd883638150c05657247aa4861a97", default-features = false, features = ["cc"] }
+pcilibs-rs = { git = "https://github.com/kata-containers/pcilibs-rs", rev = "b2f9dc0d9a71e78694b35270687e66321bda8385", default-features = false, features = ["cc"] }
 
 [dev-dependencies]
 # The fake sysfs trees the library's own tests use.
-pcilibs-rs = { git = "https://github.com/kata-containers/pcilibs-rs", rev = "5fa0bfd5055dd883638150c05657247aa4861a97", default-features = false, features = ["cc", "testfs"] }
+pcilibs-rs = { git = "https://github.com/kata-containers/pcilibs-rs", rev = "b2f9dc0d9a71e78694b35270687e66321bda8385", default-features = false, features = ["cc", "testfs"] }
 rstest = "0.27.0"
 tempfile = "3"

@@ -123,8 +123,11 @@ Every kernel path is a flag (`--sysfs`, `--proc`, `--dev-vfio`,
 instead of a node.
 
 The node needs an IOMMU enabled on the kernel command line and `kmod`
-installed; `vfio-pci` is loaded for you on the first run, using the host's own
-`modprobe`.
+installed. Every selected device needs a device-specific VFIO mapping in the
+kernel's `modules.alias`; an absent mapping stops provisioning before mode
+changes or binding. The generic VFIO catch-all is insufficient, including for
+ordinary PCIe GPUs and switches. Matching modules are loaded through the host's
+own `modprobe`.
 
 ## Deploying it
 

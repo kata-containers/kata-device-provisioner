@@ -260,8 +260,7 @@ fn passthrough_set(states: &[DeviceState], mode: Mode, bind_fabric: bool) -> Vec
         .collect()
 }
 
-/// The fallback to `vfio-pci` is right for an ordinary PCIe GPU and wrong for
-/// a coherently attached one, which would reach a VM with its memory missing.
+/// A generic mapping must not leave a known coherent GPU's memory inaccessible.
 fn verify_variant_available(state: &DeviceState, module: &str) -> Result<()> {
     if state.provisioning() != Some(Provisioning::NvidiaInBandCc)
         || !cc::is_c2c(state.device_id)
@@ -831,6 +830,53 @@ mod tests {
         let states = node(&sysfs, &[device]);
 
         assert_eq!(target_of(&states, &states[0].address, mode), expected);
+    }
+
+    #[rstest]
+    #[case::pcie_gpu(H100)]
+    #[case::coherent_gpu(GB200)]
+    #[case::rubin_gpu(RUBIN_C2C)]
+    #[case::switch(NVSWITCH)]
+    fn missing_vfio_mapping_stops_before_module_loading(sysfs: Fake, #[case] device: (u16, u32)) {
+        let states = node(&sysfs, &[device]);
+        let proc_root = tempfile::tempdir().unwrap();
+        let dev_vfio = tempfile::tempdir().unwrap();
+        let host = tempfile::tempdir().unwrap();
+        fs::create_dir_all(proc_root.path().join("sys/kernel")).unwrap();
+        fs::write(
+            proc_root.path().join("sys/kernel/osrelease"),
+            "test-kernel\n",
+        )
+        .unwrap();
+        let modules = host.path().join("lib/modules/test-kernel");
+        fs::create_dir_all(&modules).unwrap();
+        fs::write(
+            modules.join("modules.alias"),
+            "alias vfio_pci:v*d*sv*sd*bc*sc*i* vfio_pci\n",
+        )
+        .unwrap();
+
+        let err = resolve_drivers(
+            &sysfs.sysfs,
+            &roots(&sysfs, &proc_root, &dev_vfio, &host),
+            &states,
+        )
+        .err()
+        .expect("an unmapped device must fail before looking for modprobe");
+
+        let message = format!("{err:#}");
+        assert!(message.contains(&states[0].address), "{message}");
+        assert!(
+            message.contains("no device-specific VFIO module alias"),
+            "{message}"
+        );
+        assert_eq!(
+            err.root_cause()
+                .downcast_ref::<std::io::Error>()
+                .unwrap()
+                .kind(),
+            std::io::ErrorKind::NotFound
+        );
     }
 
     /// The kernel names the variant module with underscores and sysfs names
