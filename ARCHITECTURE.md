@@ -59,11 +59,15 @@ boundary in the middle of the set-and-reset pair, which has to be atomic.
 | `bind` | `driver_override` + probe, so the node is usable now without waiting for one |
 | `verify` | Re-read the mode and the binding from the hardware; the run fails loudly if it disagrees |
 
-The label that follows a successful run is written by the dispatcher, not by
-this component — see below.
+The completion label is written by the dispatcher, not this component.
+Verified fabric facts go to NFD through a local feature file after `verify`,
+so VPD access stays in the short-lived, token-free Job. NFD keeps its non-root
+worker and read-only mount. A new attempt removes the old snapshot before
+preflight; a failed run cannot leave an earlier positive result in that file.
+This asynchronous hardware label never replaces the dispatcher's admission gate.
 
-Uninstall removes only the boot configuration. Live bindings and CC mode are
-deliberately left alone — see the decisions below.
+Uninstall removes the boot configuration and NFD snapshot. Live bindings and
+CC mode are deliberately left alone — see the decisions below.
 
 ### Ordering
 

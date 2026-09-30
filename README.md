@@ -62,6 +62,21 @@ of CPU type; hardware and ServiceVM validation remain pending.
 
 VPD discovery may require root even for `status` without `--probe`.
 
+NFD stays non-root: after verification, the provisioning Job publishes
+`feature.node.kubernetes.io/managed-fabric=true` when its VFIO set includes
+qualified fabric devices. NFD's existing `local` source reads the root-owned,
+world-readable file at
+`/etc/kubernetes/node-feature-discovery/features.d/kata-device-provisioner`.
+The Job replaces it atomically; every `apply` first removes the previous
+result, and `uninstall` removes it too. No raw VPD is published.
+
+Keep the `local` source enabled and its standard read-only host mount in NFD.
+Candidate labels select the initial provisioning run; the verified label is
+output, so initial selection cannot depend on it. It is a provisioning snapshot,
+not a live readiness check: reprovision after hardware or PCI address changes
+before admitting workloads. NFD publishes changes asynchronously; the dispatcher
+still gates workload admission on Job success, not this label.
+
 The work is driverless. CC mode is set in-band over BAR0 and the FSP mailbox
 via [`pcilibs_rs::cc`](https://github.com/kata-containers/pcilibs-rs), so the NVIDIA
 kernel driver never has to be present, and PCI/VFIO truth is read from sysfs
@@ -100,8 +115,8 @@ kata-device-provisioner apply --mode on  # provision this node
 kata-device-provisioner uninstall        # remove the boot config
 ```
 
-`uninstall` leaves the live bindings and CC mode alone. It only stops the node
-from restoring the bindings after its next reboot.
+`uninstall` removes the NFD snapshot and stops the node from restoring bindings
+after its next reboot. Live bindings and CC mode stay unchanged.
 
 Every kernel path is a flag (`--sysfs`, `--proc`, `--dev-vfio`,
 `--host-root`), so the whole thing can be exercised against a directory tree
@@ -147,8 +162,8 @@ Each enabled mode gets a dispatcher run of its own, and `ccMode` covers the
 rest. The label is read when a rollout starts, so editing it takes effect on the
 next `helm upgrade` — nothing watches it.
 
-`helm uninstall` removes the boot configuration and releases the devices; it
-leaves CC mode alone, because reverting it costs a GPU reset per device.
+`helm uninstall` removes the boot configuration and NFD snapshot; live bindings
+and CC mode stay unchanged.
 
 The per-node Jobs are privileged and share the host's PID namespace, so on a
 cluster that enforces Pod Security the namespace needs to allow it:
