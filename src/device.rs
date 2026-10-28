@@ -382,14 +382,7 @@ pub(crate) mod tests {
             ("0000:06:00.0", false),
             ("0000:05:00.2", true),
         ] {
-            fake.add_pci_device(bdf, 0x15b3, 0x1021, 0x020700, None);
-            if marker {
-                std::fs::write(
-                    fake.device(bdf).join("vpd"),
-                    b"\x90\x0e\x00VA\x0bSMDL=SW_MNG\x78",
-                )
-                .unwrap();
-            }
+            fake.add_connectx(bdf, marker);
         }
         std::os::unix::fs::symlink(
             fake.device("0000:05:00.0"),
