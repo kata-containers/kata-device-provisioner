@@ -81,6 +81,18 @@ const MODULES_LOAD: &str = "etc/modules-load.d/kata-device-provisioner.conf";
 const MODPROBE: &str = "etc/modprobe.d/kata-device-provisioner.conf";
 const UDEV_RULES: &str = "etc/udev/rules.d/71-kata-device-provisioner.rules";
 
+/// How the boot configuration finds the device again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Scope {
+    /// By vendor and device id, so the binding follows the card if it moves
+    /// slot: `modprobe.d` for `vfio-pci`, a udev rule for a variant driver.
+    Ids,
+    /// By PCI address as well, for a function whose ids are shared with
+    /// devices that must stay on the host: a management ConnectX PF and the
+    /// node's data-path NICs.
+    Address,
+}
+
 /// `driver_override` matches the driver name, modprobe the module name.
 pub struct Claim {
     pub address: String,
@@ -88,7 +100,7 @@ pub struct Claim {
     pub device: u16,
     pub module: String,
     pub driver: String,
-    pub address_scoped: bool,
+    pub scope: Scope,
 }
 
 /// The variants register an `override_only` alias, so they match nothing until
@@ -97,15 +109,21 @@ pub fn needs_driver_override(module: &str) -> bool {
     module.replace('-', "_") != "vfio_pci"
 }
 
-/// Keyed on the ids rather than an address, so the binding follows the card if
-/// it moves slot.
-///
+/// The match half of a rule: the ids, and the address too when the ids alone
+/// would also claim devices that must stay on the host.
+fn selector(vendor: u16, device: u16, address: Option<&str>) -> String {
+    let kernel = address.map_or(String::new(), |address| format!(" KERNEL==\"{address}\","));
+    format!(
+        "ACTION==\"add\", SUBSYSTEM==\"pci\",{kernel} ATTR{{vendor}}==\"0x{vendor:04x}\", \
+         ATTR{{device}}==\"0x{device:04x}\""
+    )
+}
+
 /// A `driver_override` write neither loads the driver nor probes, and a module
 /// already up when the event arrives attaches nothing, so the rule does both.
-fn udev_rule(vendor: u16, device: u16, module: &str, driver: &str) -> String {
+fn udev_rule(selector: &str, module: &str, driver: &str) -> String {
     format!(
-        "ACTION==\"add\", SUBSYSTEM==\"pci\", ATTR{{vendor}}==\"0x{vendor:04x}\", \
-         ATTR{{device}}==\"0x{device:04x}\", ATTR{{driver_override}}=\"{driver}\", \
+        "{selector}, ATTR{{driver_override}}=\"{driver}\", \
          RUN{{builtin}}+=\"kmod load {module}\", \
          RUN+=\"/bin/sh -c 'echo %k > /sys/bus/pci/drivers_probe'\"\n"
     )
@@ -131,43 +149,40 @@ pub fn persist(host_root: &Path, claims: &[Claim]) -> Result<Vec<String>> {
         {
             modules.push(&claim.module);
         }
-        if claim.address_scoped {
-            // Management PFs can share a device ID with ordinary network NICs.
-            let address = pcilibs_rs::normalize_bdf(&claim.address)
-                .with_context(|| format!("invalid PCI address {}", claim.address))?;
-            let selector = format!(
-                "ACTION==\"add\", SUBSYSTEM==\"pci\", KERNEL==\"{address}\", ATTR{{vendor}}==\"0x{:04x}\", ATTR{{device}}==\"0x{:04x}\"",
-                claim.vendor, claim.device
-            );
-            // mlx5 may bind before udev processes the add event.
-            rules.push(format!(
-                "{selector}, DRIVER==\"?*\", DRIVER!=\"{}\", ATTR{{driver_override}}=\"{}\", ATTR{{driver/unbind}}=\"{address}\"\n",
-                claim.driver, claim.driver
-            ));
-            rules.push(
-                udev_rule(claim.vendor, claim.device, &claim.module, &claim.driver).replacen(
-                    "SUBSYSTEM==\"pci\",",
-                    &format!("SUBSYSTEM==\"pci\", KERNEL==\"{address}\","),
-                    1,
-                ),
-            );
-            overridden.push(address);
-        } else if needs_driver_override(&claim.module) {
-            overridden.push(claim.address.clone());
-            rules.push(udev_rule(
-                claim.vendor,
-                claim.device,
-                &claim.module,
-                &claim.driver,
-            ));
-        } else {
-            ids.push(format!("{:04x}:{:04x}", claim.vendor, claim.device));
+        match claim.scope {
+            Scope::Ids if !needs_driver_override(&claim.module) => {
+                ids.push(format!("{:04x}:{:04x}", claim.vendor, claim.device));
+            }
+            Scope::Ids => {
+                overridden.push(claim.address.clone());
+                rules.push(udev_rule(
+                    &selector(claim.vendor, claim.device, None),
+                    &claim.module,
+                    &claim.driver,
+                ));
+            }
+            Scope::Address => {
+                let address = pcilibs_rs::normalize_bdf(&claim.address)
+                    .with_context(|| format!("invalid PCI address {}", claim.address))?;
+                let selector = selector(claim.vendor, claim.device, Some(&address));
+                // The host driver may claim the function before udev sees the
+                // add event, so the first rule takes it back; the second, after
+                // it in file order, loads the vfio driver and probes.
+                rules.push(format!(
+                    "{selector}, DRIVER==\"?*\", DRIVER!=\"{driver}\", \
+                     ATTR{{driver_override}}=\"{driver}\", ATTR{{driver/unbind}}=\"{address}\"\n",
+                    driver = claim.driver
+                ));
+                rules.push(udev_rule(&selector, &claim.module, &claim.driver));
+                overridden.push(address);
+            }
         }
     }
     ids.sort();
     ids.dedup();
-    let mut seen_rules = std::collections::HashSet::new();
-    rules.retain(|rule| seen_rules.insert(rule.clone()));
+    // File order carries meaning, a detach before its probe, so dedup only.
+    let mut seen = std::collections::HashSet::new();
+    rules.retain(|rule| seen.insert(rule.clone()));
 
     write(
         &host_root.join(MODULES_LOAD),
@@ -298,7 +313,7 @@ mod tests {
     fn claim(address: &str, device: u16, module: &str) -> Claim {
         Claim {
             address: address.to_string(),
-            address_scoped: false,
+            scope: Scope::Ids,
             vendor: 0x10de,
             device,
             module: module.to_string(),
@@ -370,8 +385,7 @@ mod tests {
     fn the_rule_is_the_one_that_was_validated() {
         assert_eq!(
             udev_rule(
-                0x10de,
-                0x2342,
+                &selector(0x10de, 0x2342, None),
                 "nvgrace_gpu_vfio_pci",
                 "nvgrace_gpu_vfio_pci"
             ),
@@ -386,7 +400,11 @@ mod tests {
     /// would catch them being swapped.
     #[rstest]
     fn the_override_names_the_driver_and_the_load_names_the_module() {
-        let rule = udev_rule(0x10de, 0x2342, "some_vfio_module", "some-vfio-driver");
+        let rule = udev_rule(
+            &selector(0x10de, 0x2342, None),
+            "some_vfio_module",
+            "some-vfio-driver",
+        );
 
         assert!(
             rule.contains(r#"ATTR{driver_override}="some-vfio-driver""#),
@@ -447,6 +465,17 @@ mod tests {
         assert!(!host.path().join(MODULES_LOAD).exists());
         assert!(!host.path().join(MODPROBE).exists());
     }
+    /// The address narrows the match; the ids stay, so a function that moves
+    /// slot is not claimed by whatever lands at its old address.
+    #[rstest]
+    fn an_address_selector_keeps_the_id_match() {
+        assert_eq!(
+            selector(0x15b3, 0x1021, Some("0000:05:00.0")),
+            "ACTION==\"add\", SUBSYSTEM==\"pci\", KERNEL==\"0000:05:00.0\", \
+             ATTR{vendor}==\"0x15b3\", ATTR{device}==\"0x1021\""
+        );
+    }
+
     #[rstest]
     #[case::generic("vfio_pci", "vfio-pci")]
     #[case::variant("mlx5_vfio_pci", "mlx5-vfio-pci")]
@@ -463,7 +492,7 @@ mod tests {
                 device: 0x1021,
                 module: module.to_string(),
                 driver: driver.to_string(),
-                address_scoped: true,
+                scope: Scope::Address,
             })
             .collect();
         assert_eq!(persist(host.path(), &claims).unwrap().len(), 2);
@@ -482,6 +511,5 @@ mod tests {
                 assert!(line.contains("drivers_probe"));
             }
         }
-        println!("{rules}");
     }
 }
