@@ -510,18 +510,27 @@ A missing VFIO variant is an error even when that GPU supports CC transitions.
 
 ### Fabric management belongs to the ServiceVM
 
-HGX profiles request `--bind-fabric` independently of GPU CC mode. Hx00 exposes
-direct NVSwitch functions; Bx00/Rx00 exposes ConnectX management PFs. The latter
-enter scope only after pcilibs-rs qualifies their VPD role or their relationship
-to a marked sibling PF. VFs and ordinary NICs remain excluded. A candidate
-node label cannot bypass this check.
+HGX profiles request `--bind-fabric` independently of GPU CC mode. The fabric
+is what pcilibs-rs names on the node through `Topology::fabric()`: the NVSwitch
+chips on Hx00, the management ConnectX PFs on Bx00/Rx00, qualified by the VPD
+role the HGX guide documents or by sitting beside a marked sibling PF. VFs and
+ordinary NICs are never named, so a candidate node label cannot bypass the
+scan, and the scan runs only on a node with a fabric candidate.
+
+kata-device-plugin advertises that fabric as one `nvidia.com/nvswitch-fabric`
+device, and only once every function the scan names is bound; a Service VM
+requests `nvidia.com/nvswitch-fabric: 1` on every platform. The provisioner
+therefore binds the fabric whole or not at all: a run that would leave any of
+its functions on the host is refused before a GPU is touched, and a fabric
+nobody asked for stays on the host whole.
 
 Management PFs share PCI IDs with ordinary NICs. Their boot configuration must
 therefore match individual BDFs as well as IDs, for generic and variant VFIO
 drivers alike. The udev rules set the override, detach an already-bound driver,
 then load and probe the VFIO driver. Address changes require reprovisioning.
-No live hardware is touched by tests; cold-boot and ServiceVM validation remain
-necessary on Bx00/Rx00 hardware.
+No live hardware is touched by tests. A Rubin node shows the same management
+slot as Bx00, a ConnectX-9 whose four InfiniBand PFs carry the marker; cold-boot
+and ServiceVM validation remain necessary on Bx00/Rx00 hardware.
 
 #### What was rejected
 

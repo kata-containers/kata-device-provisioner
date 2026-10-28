@@ -52,6 +52,9 @@ file can write, so those devices are carried by the udev rule instead.
 
 HGX profiles enable `bindFabric: true` so direct NVSwitches on Hx00 and
 qualified ConnectX management PFs on Bx00/Rx00 can be assigned to a ServiceVM.
+The device plugin advertises that fabric as one `nvidia.com/nvswitch-fabric`
+device only when all of it is bound, so a run that would bind part of it is
+refused before any GPU mode changes.
 For the CLI, use `apply --mode off --bind-fabric`. Stop host fabric services
 and unbind their management PFs first: the binding preflight refuses another
 driver before any GPU mode changes. Management PF persistence
@@ -71,6 +74,8 @@ The Job replaces it atomically; every `apply` first removes the previous
 result, and `uninstall` removes it too. No raw VPD is published.
 
 Keep the `local` source enabled and its standard read-only host mount in NFD.
+The kubelet's `nvidia.com/nvswitch-fabric` allocatable is the live fact; the
+label is a selection hint, for a ServiceVM DaemonSet's nodeSelector.
 Candidate labels select the initial provisioning run; the verified label is
 output, so initial selection cannot depend on it. It is a provisioning snapshot,
 not a live readiness check: reprovision after hardware or PCI address changes

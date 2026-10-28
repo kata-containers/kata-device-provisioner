@@ -41,14 +41,16 @@ HGX profiles set `bindFabric: true`, which passes `--bind-fabric` to the binary.
 Stop host fabric services and unbind their management PFs before the first run;
 a conflicting driver is refused before GPU mode changes.
 This binds fabric management devices even with CC off or on, so they can be
-assigned to a ServiceVM. A run requesting fabric binding fails before mutation
-if no qualified fabric device is found. PPCIE continues to bind the whole
-Hopper board for a single CVM.
+assigned to a ServiceVM, and binds the whole fabric pcilibs-rs names or none of
+it: a run requesting fabric binding fails before mutation if no qualified fabric
+device is found or if any of its functions would stay on the host. PPCIE
+continues to bind the whole Hopper board for a single CVM.
 
 The Rx00 profile does not select by CPU type. Coherent Rubin GPUs still require
 a suitable VFIO variant from the running kernel; their in-band CC capability
-is separate. The profile defaults to CC off. Rx00 hardware and ServiceVM
-passthrough validation remain pending.
+is separate. The profile defaults to CC off. A Rubin node shows the same
+management slot as Bx00, a ConnectX-9 with four marked InfiniBand PFs; ServiceVM
+passthrough validation remains pending.
 
 NFD cannot check the VPD role here. Its managed-fabric candidate label combines
 GPU family with Mellanox PCI presence. A discrete GPU plus an ordinary NIC can
