@@ -441,6 +441,14 @@ pub(crate) mod tests {
         }
     }
 
+    pub(crate) const H100: (u16, u32) = (0x2330, 0x030200);
+    pub(crate) const B200: (u16, u32) = (0x2901, 0x030200);
+    pub(crate) const A100: (u16, u32) = (0x20b0, 0x030200);
+    pub(crate) const NVSWITCH: (u16, u32) = (0x22a3, 0x068000);
+    pub(crate) const GH200: (u16, u32) = (0x2342, 0x030200);
+    pub(crate) const RUBIN_C2C: (u16, u32) = (0x3041, 0x030200);
+    pub(crate) const GB200: (u16, u32) = (0x2941, 0x030200);
+
     /// NVIDIA devices at consecutive bus numbers, in scope.
     pub(crate) fn node(sysfs: &Fake, devices: &[(u16, u32)]) -> Vec<DeviceState> {
         for (slot, (device, class)) in devices.iter().enumerate() {
