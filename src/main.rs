@@ -10,14 +10,14 @@ mod modules;
 mod nfd;
 mod nvidia;
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
 use pcilibs_rs::cc;
 
-use crate::device::{discover, DeviceState, Provisioning};
+use crate::device::{discover, in_scope, DeviceState, Node, Provisioning};
 use crate::idle::{DEV_VFIO, PROC};
 use crate::mode::Mode;
 use crate::nvidia::Transition;
@@ -106,7 +106,7 @@ fn main() -> Result<()> {
 }
 
 fn status(probe: bool, all: bool, sysfs: &Sysfs) -> Result<()> {
-    let mut states = discover(sysfs)?;
+    let mut states = discover(sysfs)?.devices;
     states.retain(|state| all || state.in_scope());
 
     if states.is_empty() {
@@ -172,30 +172,30 @@ fn apply(mode: Mode, bind_fabric: bool, roots: &Roots) -> Result<()> {
 
     host::check(&sysfs)?;
 
-    let mut states = in_scope(&sysfs)?;
-    if states.is_empty() {
+    let mut node = in_scope(&sysfs)?;
+    if node.devices.is_empty() {
         bail!("no devices in scope: this node was selected for provisioning but has none");
     }
 
     // Across every device before any is touched: refuse whole, not half.
-    verify_capable(&states, mode)?;
-    verify_fabric(&states, bind_fabric)?;
-
-    let passthrough = passthrough_set(&states, mode, bind_fabric);
+    verify_capable(&node.devices, mode)?;
+    let passthrough = passthrough_set(&node.devices, mode, bind_fabric);
+    verify_fabric(&node, &passthrough, bind_fabric)?;
+    let states = &mut node.devices;
 
     // Before any reset, so a missing driver is not found out half way through.
     let drivers = resolve_drivers(&sysfs, roots, &passthrough)?;
     verify_bindable(&sysfs, &passthrough, &drivers)?;
 
     // Re-read in `nvidia::apply`: hardware may change after this safety check.
-    let unreadable = nvidia::probe_modes(&mut states);
+    let unreadable = nvidia::probe_modes(states);
     verify_idle(
         roots,
         &sysfs,
-        &writable(&sysfs, &states, &passthrough, &drivers, mode, &unreadable),
+        &writable(&sysfs, states, &passthrough, &drivers, mode, &unreadable),
     )?;
 
-    mode_stage(&states, mode)?;
+    mode_stage(states, mode)?;
 
     // Before binding, so a crash leaves a node that comes back bound.
     persist(&roots.host_root, &passthrough, &drivers)?;
@@ -208,7 +208,7 @@ fn apply(mode: Mode, bind_fabric: bool, roots: &Roots) -> Result<()> {
         }
     }
 
-    release(&sysfs, &states, &passthrough)?;
+    release(&sysfs, states, &passthrough)?;
 
     verify_and_publish(roots, mode, &passthrough, &drivers)?;
 
@@ -244,9 +244,34 @@ fn release(sysfs: &Sysfs, states: &[DeviceState], passthrough: &[DeviceState]) -
     Ok(())
 }
 
-fn verify_fabric(states: &[DeviceState], bind_fabric: bool) -> Result<()> {
-    if bind_fabric && !states.iter().any(DeviceState::is_fabric) {
+/// The fabric is passed through whole or not at all.  The device plugin
+/// advertises nvidia.com/nvswitch-fabric only once every function pcilibs-rs
+/// names is bound, so binding part of it would leave the node without the
+/// resource and the Service VM without a fabric it can bring up.  Refused
+/// before any GPU is touched.
+fn verify_fabric(node: &Node, passthrough: &[DeviceState], bind_fabric: bool) -> Result<()> {
+    let bound: BTreeSet<&str> = passthrough
+        .iter()
+        .filter(|state| state.is_fabric())
+        .map(|state| state.address.as_str())
+        .collect();
+    if bind_fabric && bound.is_empty() {
         bail!("fabric binding requested but no NVSwitch or qualified management PF was found");
+    }
+    let missing: Vec<&str> = node
+        .fabric
+        .iter()
+        .map(String::as_str)
+        .filter(|bdf| !bound.contains(bdf))
+        .collect();
+    if !bound.is_empty() && !missing.is_empty() {
+        bail!(
+            "the NVSwitch fabric is passed through whole or not at all, and {} of its {} \
+             functions would stay on the host: {}",
+            missing.len(),
+            node.fabric.len(),
+            missing.join(", ")
+        );
     }
     Ok(())
 }
@@ -538,17 +563,10 @@ fn uninstall(roots: &Roots) -> Result<()> {
     Ok(())
 }
 
-fn in_scope(sysfs: &Sysfs) -> Result<Vec<DeviceState>> {
-    Ok(discover(sysfs)?
-        .into_iter()
-        .filter(DeviceState::in_scope)
-        .collect())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::device::tests::managed_fabric_node;
+    use crate::device::tests::{managed_fabric_node, node};
     use pcilibs_rs::cc::CcMode;
     use pcilibs_rs::testfs::{self, Fake};
     use rstest::{fixture, rstest};
@@ -566,20 +584,6 @@ mod tests {
     #[fixture]
     fn sysfs() -> Fake {
         testfs::fake()
-    }
-
-    fn node(sysfs: &Fake, devices: &[(u16, u32)]) -> Vec<DeviceState> {
-        for (slot, (device, class)) in devices.iter().enumerate() {
-            sysfs.add_pci_device(
-                &format!("0000:{:02x}:00.0", slot),
-                0x10de,
-                *device,
-                *class,
-                None,
-            );
-        }
-
-        in_scope(&sysfs.sysfs).unwrap()
     }
 
     fn hold(proc_root: &TempDir, dev_vfio: &TempDir, pid: u32, comm: &str, group: &str) {
@@ -718,7 +722,7 @@ mod tests {
         let host = tempfile::tempdir().unwrap();
         hold(&proc_root, &dev_vfio, 4242, "qemu-system-x86", "14");
 
-        let mut states = in_scope(&sysfs.sysfs).unwrap();
+        let mut states = in_scope(&sysfs.sysfs).unwrap().devices;
         states[0].cc_mode = cc;
 
         let writable = writable(
@@ -999,18 +1003,53 @@ mod tests {
     #[case::on(Mode::On)]
     #[case::devtools(Mode::DevTools)]
     fn service_vm_binding_is_independent_of_cc_mode(sysfs: Fake, #[case] mode: Mode) {
-        let states = node(&sysfs, &[H100, NVSWITCH]);
-        verify_fabric(&states, true).unwrap();
-        assert_eq!(passthrough_set(&states, mode, true).len(), 2);
+        let _ = node(&sysfs, &[H100, NVSWITCH]);
+        let node = in_scope(&sysfs.sysfs).unwrap();
+        let passthrough = passthrough_set(&node.devices, mode, true);
+        verify_fabric(&node, &passthrough, true).unwrap();
+        assert_eq!(passthrough.len(), 2);
     }
 
     #[rstest]
     fn a_candidate_label_cannot_authorize_an_ordinary_nic(sysfs: Fake) {
         let _ = node(&sysfs, &[B200]);
         sysfs.add_pci_device("0000:06:00.0", 0x15b3, 0x1021, 0x020700, None);
-        let states = in_scope(&sysfs.sysfs).unwrap();
-        assert!(verify_fabric(&states, true).is_err());
-        assert!(verify_fabric(&states, false).is_ok());
+        let node = in_scope(&sysfs.sysfs).unwrap();
+        let passthrough = passthrough_set(&node.devices, Mode::Off, true);
+        assert!(verify_fabric(&node, &passthrough, true).is_err());
+        assert!(verify_fabric(&node, &passthrough, false).is_ok());
+    }
+
+    /// A management PF the scan names but no row admits, here one that
+    /// came up as an Ethernet function, would stay on the host; the device
+    /// plugin would then advertise no fabric at all.
+    #[rstest]
+    fn a_fabric_that_would_be_bound_in_part_is_refused(managed_fabric_node: Fake) {
+        let fake = managed_fabric_node;
+        fake.add_pci_device("0000:05:00.3", 0x15b3, 0x1021, 0x020000, None);
+        let node = in_scope(&fake.sysfs).unwrap();
+        assert_eq!(node.fabric.len(), 3);
+
+        let passthrough = passthrough_set(&node.devices, Mode::Off, true);
+        let err = verify_fabric(&node, &passthrough, true)
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("0000:05:00.3"), "{err}");
+        assert!(err.contains("1 of its 3"), "{err}");
+    }
+
+    /// Left on the host whole when nothing asks for it: an incomplete
+    /// fabric is only a problem once part of it is being passed through.
+    #[rstest]
+    fn a_fabric_nobody_asked_for_stays_on_the_host_whole(sysfs: Fake) {
+        let _ = node(&sysfs, &[H100, NVSWITCH, NVSWITCH]);
+        let node = in_scope(&sysfs.sysfs).unwrap();
+        assert_eq!(node.fabric.len(), 2);
+
+        let passthrough = passthrough_set(&node.devices, Mode::On, false);
+        verify_fabric(&node, &passthrough, false).unwrap();
+        assert_eq!(passthrough.len(), 1);
     }
 
     #[rstest]
@@ -1023,12 +1062,13 @@ mod tests {
         let fake = managed_fabric_node;
         fake.add_pci_device("0000:40:00.0", 0x10de, device, 0x030200, None);
         fake.add_driver("vfio-pci");
-        let states = in_scope(&fake.sysfs).unwrap();
-        verify_fabric(&states, true).unwrap();
-        verify_capable(&states, Mode::On).unwrap();
-        let targets = passthrough_set(&states, Mode::Off, true);
+        let node = in_scope(&fake.sysfs).unwrap();
+        let states = &node.devices;
+        verify_capable(states, Mode::On).unwrap();
+        let targets = passthrough_set(states, Mode::Off, true);
+        verify_fabric(&node, &targets, true).unwrap();
         assert_eq!(targets.len(), 3);
-        assert_eq!(passthrough_set(&states, Mode::Off, false).len(), 1);
+        assert_eq!(passthrough_set(states, Mode::Off, false).len(), 1);
         let drivers = targets
             .iter()
             .map(|s| (s.address.clone(), vfio_pci()))
@@ -1072,7 +1112,7 @@ mod tests {
     ) {
         let fake = managed_fabric_node;
         fake.add_device("0000:05:00.0", driver);
-        let states = in_scope(&fake.sysfs).unwrap();
+        let states = in_scope(&fake.sysfs).unwrap().devices;
         let drivers = states
             .iter()
             .map(|s| (s.address.clone(), vfio_pci()))
@@ -1085,7 +1125,7 @@ mod tests {
     }
     #[rstest]
     fn managed_fabric_cannot_take_ppcie(managed_fabric_node: Fake) {
-        let states = in_scope(&managed_fabric_node.sysfs).unwrap();
+        let states = in_scope(&managed_fabric_node.sysfs).unwrap().devices;
         assert!(verify_capable(&states, Mode::Ppcie).is_err());
     }
     #[fixture]
@@ -1116,7 +1156,7 @@ mod tests {
         #[case] all_bound: bool,
     ) {
         let fake = managed_fabric_node;
-        let states = in_scope(&fake.sysfs).unwrap();
+        let states = in_scope(&fake.sysfs).unwrap().devices;
         let host = tempfile::tempdir().unwrap();
         let roots = Roots {
             sysfs: fake.root().to_path_buf(),
@@ -1142,7 +1182,7 @@ mod tests {
     #[rstest]
     fn an_ordinary_nic_cannot_produce_a_fabric_fact(sysfs: Fake) {
         sysfs.add_pci_device("0000:06:00.0", 0x15b3, 0x1021, 0x020700, None);
-        let states = in_scope(&sysfs.sysfs).unwrap();
+        let states = in_scope(&sysfs.sysfs).unwrap().devices;
         let host = tempfile::tempdir().unwrap();
         nfd::publish(host.path(), states.iter().any(DeviceState::is_fabric)).unwrap();
         assert!(!host.path().join(nfd::FILE).exists());

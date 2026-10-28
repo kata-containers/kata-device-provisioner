@@ -17,6 +17,7 @@ pub enum Provisioning {
     NvidiaInBandCc,
     /// NVSwitch: no CC mode of its own, but carries the baseboard's PPCIE mode.
     NvidiaInBandPpcie,
+    /// A management ConnectX PF: bind-only, no mode of any kind.
     FabricManagement,
 }
 
@@ -44,23 +45,15 @@ pub struct DeviceRow {
 /// A device with no row is never touched. The identities match
 /// kata-device-plugin's, so the two cannot disagree about what a device is.
 pub const DEVICES: &[DeviceRow] = &[
+    // The management ConnectX of an HGX B200/B300 or Rx00 baseboard, whose PFs
+    // represent the NVSwitches (HGX guide 19.0, section 3.2.2.2).  The row
+    // admits InfiniBand functions; which of them are management PFs is the
+    // topology scan's call, since the node's data-path NICs share this identity.
     DeviceRow {
         vendor: 0x15b3,
         class_prefix: 0x0207,
         provisioning: Provisioning::FabricManagement,
         cc_labels: None,
-    },
-    DeviceRow {
-        vendor: 0x15b3,
-        class_prefix: 0x0200,
-        provisioning: Provisioning::FabricManagement,
-        cc_labels: None,
-    },
-    DeviceRow {
-        vendor: 0x10de,
-        class_prefix: 0x0300,
-        provisioning: Provisioning::NvidiaInBandCc,
-        cc_labels: Some(&NVIDIA_CC_LABELS),
     },
     // NVIDIA GPU: 3D controller.
     DeviceRow {
@@ -161,25 +154,48 @@ impl DeviceState {
     }
 }
 
+/// What the node has: every passthrough-capable device, and the NVSwitch
+/// fabric pcilibs-rs names on it, bound or not.
+pub struct Node {
+    pub devices: Vec<DeviceState>,
+    /// BDFs of the fabric a Service VM is given whole (HGX guide 19.0, section
+    /// 3.2.2): switch chips where they are PCI functions, management ConnectX
+    /// PFs where they are not.  Empty when nothing on the node made the scan
+    /// run.
+    pub fabric: Vec<String>,
+}
+
 /// VPD may require root; discovery never opens device registers.
-pub fn discover(sysfs: &Sysfs) -> Result<Vec<DeviceState>> {
+pub fn discover(sysfs: &Sysfs) -> Result<Node> {
     let manager = PCIDeviceManager::new(sysfs.clone());
-    let devices = manager
+    let devices: Vec<_> = manager
         .get_all_devices(None)
-        .with_context(|| format!("enumerate PCI devices under {}", sysfs.devices().display()))?;
-
-    let topology = pcilibs_rs::platform::discover_topology(sysfs)?;
-
-    Ok(devices
+        .with_context(|| format!("enumerate PCI devices under {}", sysfs.devices().display()))?
         .into_iter()
         .filter(|dev| is_passthrough_capable_class(dev.class))
+        .collect();
+
+    // The scan reads every Mellanox PF's VPD and fails whole on one unreadable
+    // attribute, so a node with no fabric candidate never pays for it.
+    let candidate = devices.iter().any(|dev| {
+        row_for(dev.vendor, dev.class)
+            .is_some_and(|row| row.provisioning != Provisioning::NvidiaInBandCc)
+    });
+    let fabric: Vec<String> = if candidate {
+        pcilibs_rs::platform::discover_topology(sysfs)
+            .context("scan the node for its NVSwitch fabric")?
+            .fabric()
+            .map(str::to_owned)
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let devices = devices
+        .into_iter()
         .map(|dev| {
             let row = row_for(dev.vendor, dev.class).filter(|row| {
-                row.provisioning != Provisioning::FabricManagement
-                    || topology
-                        .management_functions
-                        .iter()
-                        .any(|pf| pf.bdf == dev.address)
+                row.provisioning != Provisioning::FabricManagement || fabric.contains(&dev.address)
             });
             DeviceState {
                 vendor: dev.vendor,
@@ -200,7 +216,16 @@ pub fn discover(sysfs: &Sysfs) -> Result<Vec<DeviceState>> {
                 address: dev.address,
             }
         })
-        .collect())
+        .collect();
+
+    Ok(Node { devices, fabric })
+}
+
+/// The devices a run may touch: those with a `DEVICES` row.
+pub fn in_scope(sysfs: &Sysfs) -> Result<Node> {
+    let mut node = discover(sysfs)?;
+    node.devices.retain(DeviceState::in_scope);
+    Ok(node)
 }
 
 #[cfg(test)]
@@ -241,7 +266,7 @@ pub(crate) mod tests {
     )]
     #[case::pre_cc_gpu(0x10de, 0x20b0, 0x030200, Some(Provisioning::NvidiaInBandCc), None)]
     #[case::nvswitch(0x10de, 0x22a3, 0x068000, Some(Provisioning::NvidiaInBandPpcie), None)]
-    #[case::display_gpu(0x10de, 0x25b2, 0x030000, Some(Provisioning::NvidiaInBandCc), None)]
+    #[case::display_gpu(0x10de, 0x25b2, 0x030000, None, None)]
     #[case::amd_gpu(0x1002, 0x74a1, 0x030200, None, None)]
     #[case::intel_nic(0x8086, 0x1521, 0x020000, None, None)]
     fn table_decides_what_is_in_scope(
@@ -254,7 +279,7 @@ pub(crate) mod tests {
     ) {
         sysfs.add_pci_device("0000:65:00.0", vendor, device, class, None);
 
-        let states = discover(&sysfs.sysfs).unwrap();
+        let states = discover(&sysfs.sysfs).unwrap().devices;
 
         assert_eq!(states[0].provisioning(), provisioning);
         assert_eq!(states[0].cc_chip, cc_chip);
@@ -272,7 +297,7 @@ pub(crate) mod tests {
         #[case] ready_state: &str,
     ) {
         sysfs.add_pci_device("0000:65:00.0", 0x10de, 0x2330, 0x030200, None);
-        let mut states = discover(&sysfs.sysfs).unwrap();
+        let mut states = discover(&sysfs.sysfs).unwrap().devices;
         states[0].cc_mode = Some(mode);
 
         assert_eq!(
@@ -289,7 +314,7 @@ pub(crate) mod tests {
     #[rstest]
     fn a_ppcie_gpu_is_labelled_ppcie_and_ready(sysfs: Fake) {
         sysfs.add_pci_device("0000:65:00.0", 0x10de, 0x2330, 0x030200, None);
-        let mut states = discover(&sysfs.sysfs).unwrap();
+        let mut states = discover(&sysfs.sysfs).unwrap().devices;
         states[0].cc_mode = Some(CcMode::Off);
         states[0].ppcie_mode = Some(PpcieMode::On);
 
@@ -313,7 +338,7 @@ pub(crate) mod tests {
     ) {
         sysfs.add_pci_device("0000:65:00.0", vendor, device, class, None);
 
-        let states = discover(&sysfs.sysfs).unwrap();
+        let states = discover(&sysfs.sysfs).unwrap().devices;
 
         assert!(states[0].cc_label_values().is_empty());
     }
@@ -330,7 +355,7 @@ pub(crate) mod tests {
     ) {
         sysfs.add_pci_device("0000:64:00.0", vendor, device, class, None);
 
-        assert!(discover(&sysfs.sysfs).unwrap().is_empty());
+        assert!(discover(&sysfs.sysfs).unwrap().devices.is_empty());
     }
 
     #[rstest]
@@ -340,14 +365,14 @@ pub(crate) mod tests {
     fn reports_current_driver(sysfs: Fake, #[case] driver: Option<&str>) {
         sysfs.add_pci_device("0000:65:00.0", 0x10de, 0x2330, 0x030200, driver);
 
-        let states = discover(&sysfs.sysfs).unwrap();
+        let states = discover(&sysfs.sysfs).unwrap().devices;
 
         assert_eq!(states[0].driver.as_deref(), driver);
     }
 
     #[rstest]
     fn discovers_in_pci_address_order(hopper_node: Fake) {
-        let states = discover(&hopper_node.sysfs).unwrap();
+        let states = discover(&hopper_node.sysfs).unwrap().devices;
 
         let in_scope: Vec<_> = states
             .iter()
@@ -359,7 +384,7 @@ pub(crate) mod tests {
 
     #[rstest]
     fn out_of_scope_devices_are_reported_but_untagged(hopper_node: Fake) {
-        let states = discover(&hopper_node.sysfs).unwrap();
+        let states = discover(&hopper_node.sysfs).unwrap().devices;
 
         let nic = states
             .iter()
@@ -370,7 +395,7 @@ pub(crate) mod tests {
 
     #[rstest]
     fn empty_node_discovers_nothing(sysfs: Fake) {
-        assert!(discover(&sysfs.sysfs).unwrap().is_empty());
+        assert!(discover(&sysfs.sysfs).unwrap().devices.is_empty());
     }
 
     #[fixture]
@@ -394,8 +419,12 @@ pub(crate) mod tests {
 
     #[rstest]
     fn only_qualified_management_pfs_enter_scope(managed_fabric_node: Fake) {
-        let states = discover(&managed_fabric_node.sysfs).unwrap();
-        let scoped: Vec<_> = states.iter().filter(|state| state.in_scope()).collect();
+        let node = discover(&managed_fabric_node.sysfs).unwrap();
+        let scoped: Vec<_> = node
+            .devices
+            .iter()
+            .filter(|state| state.in_scope())
+            .collect();
         assert_eq!(
             scoped
                 .iter()
@@ -403,12 +432,45 @@ pub(crate) mod tests {
                 .collect::<Vec<_>>(),
             ["0000:05:00.0", "0000:05:00.1"]
         );
+        assert_eq!(node.fabric, ["0000:05:00.0", "0000:05:00.1"]);
         for state in scoped {
             assert_eq!(state.provisioning(), Some(Provisioning::FabricManagement));
             assert!(!state.cc_capable());
             assert!(!state.carries_ppcie());
             assert!(state.cc_label_values().is_empty());
         }
+    }
+
+    /// NVIDIA devices at consecutive bus numbers, in scope.
+    pub(crate) fn node(sysfs: &Fake, devices: &[(u16, u32)]) -> Vec<DeviceState> {
+        for (slot, (device, class)) in devices.iter().enumerate() {
+            sysfs.add_pci_device(
+                &format!("0000:{slot:02x}:00.0"),
+                0x10de,
+                *device,
+                *class,
+                None,
+            );
+        }
+
+        in_scope(&sysfs.sysfs).unwrap().devices
+    }
+
+    /// An ordinary NIC's VPD is not read on a node that has nothing to scan
+    /// for, so a GPU-only node cannot be blocked by one it cannot read.
+    #[rstest]
+    fn a_node_without_fabric_candidates_is_not_scanned(sysfs: Fake) {
+        sysfs.add_pci_device("0000:65:00.0", 0x10de, 0x2330, 0x030200, None);
+        sysfs.add_pci_device("0000:01:00.0", 0x15b3, 0x1025, 0x020000, None);
+        std::fs::create_dir(sysfs.device("0000:01:00.0").join("vpd")).unwrap();
+
+        let node = discover(&sysfs.sysfs).unwrap();
+
+        assert!(node.fabric.is_empty());
+        assert_eq!(
+            node.devices.iter().filter(|state| state.in_scope()).count(),
+            1
+        );
     }
 
     #[rstest]

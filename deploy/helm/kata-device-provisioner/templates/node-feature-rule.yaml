@@ -1,4 +1,9 @@
-{{- /* PCI labels select candidates; only pcilibs-rs VPD discovery authorizes management-PF binding. */ -}}
+{{- /*
+PCI labels select candidates; only pcilibs-rs VPD discovery on the node
+authorizes management-PF binding.  Classes match the DEVICES table, which
+matches kata-device-plugin's: 0302 for GPUs, 0680 for NVSwitch chips, 0207
+for the management ConnectX.
+*/ -}}
 {{- if include "kata-device-provisioner.nodeFeatureRuleEnabled" . | trim }}
 apiVersion: nfd.k8s-sigs.io/v1alpha1
 kind: NodeFeatureRule
@@ -15,7 +20,7 @@ spec:
         - feature: pci.device
           matchExpressions:
             vendor: { op: In, value: ["10de"] }
-            class: { op: In, value: ["0300", "0302"] }
+            class: { op: In, value: ["0302"] }
     - name: "nvidia.nvswitch"
       labels:
         "kata.feature.node.kubernetes.io/nvidia-nvswitch": "true"
@@ -31,7 +36,7 @@ spec:
         - feature: pci.device
           matchExpressions:
             vendor: { op: In, value: ["10de"] }
-            class: { op: In, value: ["0300", "0302"] }
+            class: { op: In, value: ["0302"] }
             # GH100: devid 0x22f0-0x237f (pcilibs_rs::cc::CHIPS), minus
             # 0x2340-0x234f, which holds every GH200 id C2C_DEVIDS lists
             # (0x2342/0x2343/0x2345/0x2348) plus a few unassigned ids either
@@ -44,7 +49,7 @@ spec:
         - feature: pci.device
           matchExpressions:
             vendor: { op: In, value: ["10de"] }
-            class: { op: In, value: ["0300", "0302"] }
+            class: { op: In, value: ["0302"] }
             # GB100: devid 0x2900-0x297f (pcilibs_rs::cc::CHIPS), minus
             # 0x2941-0x297f, which holds the two GB200 ids C2C_DEVIDS lists
             # (0x2941, 0x297e) plus a handful of unassigned ids past them.
@@ -59,7 +64,7 @@ spec:
         - feature: pci.device
           matchExpressions:
             vendor: { op: In, value: ["10de"] }
-            class: { op: In, value: ["0300", "0302"] }
+            class: { op: In, value: ["0302"] }
             # Coherent attachment requires a VFIO variant independently of CC support.
             device: { op: In, value: ["2342", "2343", "2345", "2348", "2941", "297e", "29bc", "31c2", "3041", "307e", "30ff"] }
     - name: "nvidia.grace-blackwell"
@@ -69,7 +74,7 @@ spec:
         - feature: pci.device
           matchExpressions:
             vendor: { op: In, value: ["10de"] }
-            class: { op: In, value: ["0300", "0302"] }
+            class: { op: In, value: ["0302"] }
             # The GB200/GB300 half of C2C_DEVIDS, so GBx00 can select those
             # without taking GH200 with them.
             device: { op: In, value: ["2941", "297e", "29bc", "31c2"] }
@@ -80,7 +85,7 @@ spec:
         - feature: pci.device
           matchExpressions:
             vendor: { op: In, value: ["10de"] }
-            class: { op: In, value: ["0300", "0302"] }
+            class: { op: In, value: ["0302"] }
             # GR100/GR102 ranges from pcilibs_rs::gpu::CHIPS, including C2C.
             device: { op: InRegexp, value: ["^30[0-9a-f]{2}$"] }
     - name: "nvidia.managed-fabric-candidate"
@@ -90,10 +95,10 @@ spec:
         - feature: pci.device
           matchExpressions:
             vendor: { op: In, value: ["10de"] }
-            class: { op: In, value: ["0300", "0302"] }
+            class: { op: In, value: ["0302"] }
             device: { op: InRegexp, value: ["^29[0-3][0-9a-f]$", "^2940$", "^31[89ab][0-9a-f]$", "^31[def][0-9a-f]$", "^30[0-9a-f]{2}$"] }
         - feature: pci.device
           matchExpressions:
             vendor: { op: In, value: ["15b3"] }
-            class: { op: In, value: ["0200", "0207"] }
+            class: { op: In, value: ["0207"] }
 {{- end }}
