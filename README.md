@@ -70,8 +70,10 @@ NFD stays non-root: after verification, the provisioning Job publishes
 qualified fabric devices. NFD's existing `local` source reads the root-owned,
 world-readable file at
 `/etc/kubernetes/node-feature-discovery/features.d/kata-device-provisioner`.
-The Job replaces it atomically; every `apply` first removes the previous
-result, and `uninstall` removes it too. No raw VPD is published.
+The Job replaces it atomically. A run withdraws it before its first device
+write and on any failure, and leaves it in place through a converged no-op, so
+NFD never drops the label for a run that changed nothing; `uninstall` removes
+it too. No raw VPD is published.
 
 Keep the `local` source enabled and its standard read-only host mount in NFD.
 The kubelet's `nvidia.com/nvswitch-fabric` allocatable is the live fact; the

@@ -62,8 +62,10 @@ boundary in the middle of the set-and-reset pair, which has to be atomic.
 The completion label is written by the dispatcher, not this component.
 Verified fabric facts go to NFD through a local feature file after `verify`,
 so VPD access stays in the short-lived, token-free Job. NFD keeps its non-root
-worker and read-only mount. A new attempt removes the old snapshot before
-preflight; a failed run cannot leave an earlier positive result in that file.
+worker and read-only mount. A run withdraws the snapshot before its first
+device write and on any failure, so no earlier positive result outlives a
+failed run, and leaves it in place through a converged run, so NFD never drops
+the label for a no-op.
 This asynchronous hardware label never replaces the dispatcher's admission gate.
 
 Uninstall removes the boot configuration and NFD snapshot. Live bindings and

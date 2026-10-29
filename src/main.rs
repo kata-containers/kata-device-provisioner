@@ -170,7 +170,20 @@ fn status(probe: bool, all: bool, sysfs: &Sysfs) -> Result<()> {
 }
 
 fn apply(mode: Mode, bind_fabric: bool, roots: &Roots) -> Result<()> {
-    nfd::remove(&roots.host_root)?;
+    let outcome = provision(mode, bind_fabric, roots);
+    if outcome.is_err() {
+        // A failed run must not leave an earlier positive fact behind.
+        if let Err(err) = nfd::remove(&roots.host_root) {
+            eprintln!("{err:#}");
+        }
+    }
+    outcome
+}
+
+/// The fabric fact is withdrawn before the first device write and kept through
+/// a converged run: NFD would otherwise drop the label for the length of a
+/// no-op, and a ServiceVM scheduled on it would be evicted for nothing.
+fn provision(mode: Mode, bind_fabric: bool, roots: &Roots) -> Result<()> {
     let sysfs = roots.sysfs();
 
     host::check(&sysfs)?;
@@ -193,11 +206,11 @@ fn apply(mode: Mode, bind_fabric: bool, roots: &Roots) -> Result<()> {
 
     // Re-read in `nvidia::apply`: hardware may change after this safety check.
     let unreadable = nvidia::probe_modes(states);
-    verify_idle(
-        roots,
-        &sysfs,
-        &writable(&sysfs, states, &passthrough, &drivers, mode, &unreadable),
-    )?;
+    let changing = writable(&sysfs, states, &passthrough, &drivers, mode, &unreadable);
+    verify_idle(roots, &sysfs, &changing)?;
+    if !changing.is_empty() {
+        nfd::remove(&roots.host_root)?;
+    }
 
     mode_stage(states, mode)?;
 
