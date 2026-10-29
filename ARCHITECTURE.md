@@ -537,10 +537,15 @@ nobody asked for stays on the host whole.
 Management PFs share PCI IDs with ordinary NICs. Their boot configuration must
 therefore match individual BDFs as well as IDs, for generic and variant VFIO
 drivers alike. The udev rules set the override, detach an already-bound driver,
-then load and probe the VFIO driver. Address changes require reprovisioning.
-No live hardware is touched by tests. A Rubin node shows the same management
-slot as Bx00, a ConnectX-9 whose four InfiniBand PFs carry the marker; cold-boot
-and ServiceVM validation remain necessary on Bx00/Rx00 hardware.
+then load and probe the VFIO driver. The detach rule answers the kernel's bind
+event as well as the add event, so a host driver that wins the race with udev
+at boot is taken back too, and it never matches our own driver, so the takeover
+cannot loop. Address changes require reprovisioning: the rule matches ids and
+address, and validating the VPD role from udev would put a shell helper and a
+VPD read on every boot. No live hardware is touched by tests. A Rubin node
+shows the same management slot as Bx00, a ConnectX-9 whose four InfiniBand PFs
+carry the marker; cold-boot and ServiceVM validation remain necessary on
+Bx00/Rx00 hardware.
 
 #### What was rejected
 

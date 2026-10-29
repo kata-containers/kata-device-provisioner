@@ -111,10 +111,10 @@ pub fn needs_driver_override(module: &str) -> bool {
 
 /// The match half of a rule: the ids, and the address too when the ids alone
 /// would also claim devices that must stay on the host.
-fn selector(vendor: u16, device: u16, address: Option<&str>) -> String {
+fn selector(actions: &str, vendor: u16, device: u16, address: Option<&str>) -> String {
     let kernel = address.map_or(String::new(), |address| format!(" KERNEL==\"{address}\","));
     format!(
-        "ACTION==\"add\", SUBSYSTEM==\"pci\",{kernel} ATTR{{vendor}}==\"0x{vendor:04x}\", \
+        "ACTION==\"{actions}\", SUBSYSTEM==\"pci\",{kernel} ATTR{{vendor}}==\"0x{vendor:04x}\", \
          ATTR{{device}}==\"0x{device:04x}\""
     )
 }
@@ -156,7 +156,7 @@ pub fn persist(host_root: &Path, claims: &[Claim]) -> Result<Vec<String>> {
             Scope::Ids => {
                 overridden.push(claim.address.clone());
                 rules.push(udev_rule(
-                    &selector(claim.vendor, claim.device, None),
+                    &selector("add", claim.vendor, claim.device, None),
                     &claim.module,
                     &claim.driver,
                 ));
@@ -164,16 +164,26 @@ pub fn persist(host_root: &Path, claims: &[Claim]) -> Result<Vec<String>> {
             Scope::Address => {
                 let address = pcilibs_rs::normalize_bdf(&claim.address)
                     .with_context(|| format!("invalid PCI address {}", claim.address))?;
-                let selector = selector(claim.vendor, claim.device, Some(&address));
                 // The host driver may claim the function before udev sees the
-                // add event, so the first rule takes it back; the second, after
-                // it in file order, loads the vfio driver and probes.
+                // add event, or probe it between the DRIVER check and the
+                // override write, so the detach rule also answers the bind
+                // event the kernel sends for every driver but ours, and
+                // finishes the takeover itself. The probe rule, after it in
+                // file order, covers the unclaimed function.
+                let detach = selector("add|bind", claim.vendor, claim.device, Some(&address));
                 rules.push(format!(
-                    "{selector}, DRIVER==\"?*\", DRIVER!=\"{driver}\", \
-                     ATTR{{driver_override}}=\"{driver}\", ATTR{{driver/unbind}}=\"{address}\"\n",
-                    driver = claim.driver
+                    "{detach}, DRIVER==\"?*\", DRIVER!=\"{driver}\", \
+                     ATTR{{driver_override}}=\"{driver}\", ATTR{{driver/unbind}}=\"{address}\", \
+                     RUN{{builtin}}+=\"kmod load {module}\", \
+                     RUN+=\"/bin/sh -c 'echo %k > /sys/bus/pci/drivers_probe'\"\n",
+                    driver = claim.driver,
+                    module = claim.module
                 ));
-                rules.push(udev_rule(&selector, &claim.module, &claim.driver));
+                rules.push(udev_rule(
+                    &selector("add", claim.vendor, claim.device, Some(&address)),
+                    &claim.module,
+                    &claim.driver,
+                ));
                 overridden.push(address);
             }
         }
@@ -385,7 +395,7 @@ mod tests {
     fn the_rule_is_the_one_that_was_validated() {
         assert_eq!(
             udev_rule(
-                &selector(0x10de, 0x2342, None),
+                &selector("add", 0x10de, 0x2342, None),
                 "nvgrace_gpu_vfio_pci",
                 "nvgrace_gpu_vfio_pci"
             ),
@@ -401,7 +411,7 @@ mod tests {
     #[rstest]
     fn the_override_names_the_driver_and_the_load_names_the_module() {
         let rule = udev_rule(
-            &selector(0x10de, 0x2342, None),
+            &selector("add", 0x10de, 0x2342, None),
             "some_vfio_module",
             "some-vfio-driver",
         );
@@ -470,7 +480,7 @@ mod tests {
     #[rstest]
     fn an_address_selector_keeps_the_id_match() {
         assert_eq!(
-            selector(0x15b3, 0x1021, Some("0000:05:00.0")),
+            selector("add", 0x15b3, 0x1021, Some("0000:05:00.0")),
             "ACTION==\"add\", SUBSYSTEM==\"pci\", KERNEL==\"0000:05:00.0\", \
              ATTR{vendor}==\"0x15b3\", ATTR{device}==\"0x1021\""
         );
@@ -504,11 +514,15 @@ mod tests {
             assert!(line.contains(&format!("KERNEL==\"{address}\"")));
             assert!(line.contains("ATTR{vendor}==\"0x15b3\""));
             assert!(line.contains("ATTR{device}==\"0x1021\""));
+            assert!(line.contains(&format!("kmod load {module}")));
+            assert!(line.contains("drivers_probe"));
             if index % 2 == 0 {
+                assert!(line.starts_with("ACTION==\"add|bind\""), "{line}");
                 assert!(line.contains("ATTR{driver/unbind}"));
+                assert!(line.contains(&format!("DRIVER!=\"{driver}\"")));
             } else {
-                assert!(line.contains(&format!("kmod load {module}")));
-                assert!(line.contains("drivers_probe"));
+                assert!(line.starts_with("ACTION==\"add\""), "{line}");
+                assert!(!line.contains("unbind"));
             }
         }
     }
