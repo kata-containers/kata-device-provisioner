@@ -132,7 +132,9 @@ installed; `vfio-pci` is loaded for you on the first run, using the host's own
 `modprobe`. A device no variant driver claims is bound to plain `vfio-pci`,
 which is right for SXM and PCIe GPUs, NVSwitches and ConnectX PFs alike. A
 coherently attached GPU is the exception: when the kernel's alias table names
-no `nvgrace_gpu_vfio_pci` for it, the node is refused rather than bound.
+no `nvgrace_gpu_vfio_pci` for it, the node is refused rather than bound. Every
+target must sit in an IOMMU group; one that does not is refused before any GPU
+is touched.
 
 ## Deploying it
 

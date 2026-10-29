@@ -184,6 +184,7 @@ fn apply(mode: Mode, bind_fabric: bool, roots: &Roots) -> Result<()> {
     verify_capable(&node.devices, mode)?;
     let passthrough = fabric::passthrough_set(&node.devices, mode, bind_fabric);
     fabric::verify(&node, &passthrough, bind_fabric)?;
+    drivers::verify_groups(&passthrough)?;
     let states = &mut node.devices;
 
     // Before any reset, so a missing driver is not found out half way through.

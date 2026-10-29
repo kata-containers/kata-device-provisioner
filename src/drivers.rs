@@ -101,6 +101,27 @@ pub(crate) fn verify_bindable(
     Ok(())
 }
 
+/// A device outside an IOMMU group cannot be bound to vfio at all, and
+/// `host::check` only proves the IOMMU is on somewhere on the node. Refused
+/// here, before a GPU mode changes or a fabric function is bound.
+pub(crate) fn verify_groups(states: &[DeviceState]) -> Result<()> {
+    let outside: Vec<String> = states
+        .iter()
+        .filter(|state| state.iommu_group < 0)
+        .map(|state| format!("{} ({})", state.address, state.device_name))
+        .collect();
+    if !outside.is_empty() {
+        bail!(
+            "{} of the node's {} passthrough devices are in no IOMMU group and cannot be bound \
+             to vfio: {}",
+            outside.len(),
+            states.len(),
+            outside.join(", ")
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -173,6 +194,23 @@ pub(crate) mod tests {
         let states = node(&sysfs, &[H100]);
 
         assert!(module_for(&sysfs.root().join("modules.alias"), &states[0]).is_err());
+    }
+
+    #[rstest]
+    #[case::grouped(true, true)]
+    #[case::outside_any_group(false, false)]
+    fn a_target_outside_an_iommu_group_is_refused(
+        sysfs: Fake,
+        #[case] grouped: bool,
+        #[case] accepted: bool,
+    ) {
+        let mut states = node(&sysfs, &[H100]);
+        if grouped {
+            sysfs.set_iommu_group(&states[0].address, 7);
+            states = in_scope(&sysfs.sysfs).unwrap().devices;
+        }
+
+        assert_eq!(verify_groups(&states).is_ok(), accepted);
     }
 
     /// The kernel names the variant module with underscores and sysfs names
