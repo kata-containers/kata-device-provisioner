@@ -66,7 +66,7 @@ of CPU type; hardware and ServiceVM validation remain pending.
 VPD discovery may require root even for `status` without `--probe`.
 
 NFD stays non-root: after verification, the provisioning Job publishes
-`feature.node.kubernetes.io/managed-fabric=true` when its VFIO set includes
+`kata.feature.node.kubernetes.io/managed-fabric=true` when its VFIO set includes
 qualified fabric devices. NFD's existing `local` source reads the root-owned,
 world-readable file at
 `/etc/kubernetes/node-feature-discovery/features.d/kata-device-provisioner`.

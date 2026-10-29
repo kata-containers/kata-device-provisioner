@@ -15,7 +15,7 @@ use anyhow::{Context, Result};
 const DIRECTORY: &str = "etc/kubernetes/node-feature-discovery/features.d";
 pub(crate) const FILE: &str =
     "etc/kubernetes/node-feature-discovery/features.d/kata-device-provisioner";
-const FABRIC: &str = "feature.node.kubernetes.io/managed-fabric=true\n";
+const FABRIC: &str = "kata.feature.node.kubernetes.io/managed-fabric=true\n";
 
 pub fn remove(host_root: &Path) -> Result<()> {
     let path = host_root.join(FILE);

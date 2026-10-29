@@ -223,7 +223,7 @@ resolution happen on the selected host through pcilibs-rs and the kernel's
 module aliases.
 
 After successful fabric provisioning, NFD's `local` source publishes
-`feature.node.kubernetes.io/managed-fabric=true` from the provisioner's feature
+`kata.feature.node.kubernetes.io/managed-fabric=true` from the provisioner's feature
 file. This covers both direct NVSwitches and qualified ConnectX management PFs
 without granting the NFD worker VPD access. Keep candidate selectors for initial
 provisioning: a verified output cannot select the Job that creates it.
