@@ -1,8 +1,20 @@
 {{- /*
-PCI labels select candidates; only pcilibs-rs VPD discovery on the node
-authorizes management-PF binding.  Classes match the DEVICES table, which
-matches kata-device-plugin's: 0302 for GPUs, 0680 for NVSwitch chips, 0207
-for the management ConnectX.
+Generated from the PCI identity catalog in pcilibs-rs by
+`UPDATE_NODE_FEATURE_RULE=1 cargo test --test node_feature_rule`. Do not edit
+by hand: `cargo test` fails when this file and the catalog disagree.
+
+The labels select candidates for a profile's Job. They prove PCI identity and
+nothing else: only the provisioner's VPD discovery on the node can tell a
+ConnectX management PF from the NIC beside it, and a candidate label never
+authorizes a binding.
+
+GPU identities are the catalog's, keyed on device id and, where one device id
+is sold as more than one attachment, on subsystem device id as well. That is
+the same catalog the binary classifies devices with, so a part the catalog
+does not know is a node that is not selected, never one that is mislabelled.
+
+Cluster-scoped with no node-specific content, so the release owns it and
+`helm uninstall` takes it away.
 */ -}}
 {{- if include "kata-device-provisioner.nodeFeatureRuleEnabled" . | trim }}
 apiVersion: nfd.k8s-sigs.io/v1alpha1
@@ -13,6 +25,7 @@ metadata:
 {{- include "kata-device-provisioner.labels" . | nindent 4 }}
 spec:
   rules:
+    # Any NVIDIA 3D controller: the PCIe profiles' base match.
     - name: "nvidia.gpu"
       labels:
         "kata.feature.node.kubernetes.io/nvidia-gpu": "true"
@@ -21,6 +34,8 @@ spec:
           matchExpressions:
             vendor: { op: In, value: ["10de"] }
             class: { op: In, value: ["0302"] }
+    # A host-visible NVSwitch, which is what makes an Hx00 baseboard.
+    # NFD does not label class 0680 by default, so this rule does.
     - name: "nvidia.nvswitch"
       labels:
         "kata.feature.node.kubernetes.io/nvidia-nvswitch": "true"
@@ -29,6 +44,8 @@ spec:
           matchExpressions:
             vendor: { op: In, value: ["10de"] }
             class: { op: In, value: ["0680"] }
+    # SXM Hopper parts: the GPU half of an HGX Hx00 baseboard. Coherent GH200
+    # and PCIe cards are not HGX and are left out.
     - name: "nvidia.hopper"
       labels:
         "kata.feature.node.kubernetes.io/nvidia-hopper": "true"
@@ -37,47 +54,42 @@ spec:
           matchExpressions:
             vendor: { op: In, value: ["10de"] }
             class: { op: In, value: ["0302"] }
-            # GH100: devid 0x22f0-0x237f (pcilibs_rs::cc::CHIPS), minus
-            # 0x2340-0x234f, which holds every GH200 id C2C_DEVIDS lists
-            # (0x2342/0x2343/0x2345/0x2348) plus a few unassigned ids either
-            # side of them.
-            device: { op: InRegexp, value: ["^22f[0-9a-f]$", "^23[0-3][0-9a-f]$", "^23[5-7][0-9a-f]$"] }
+            device: { op: In, value: ["2324", "2328", "2329", "232c", "2330", "2335", "2336", "2337", "2338", "2339"] }
+    # SXM Blackwell parts: the GPU half of an HGX Bx00 baseboard. A device id
+    # sold both as SXM and as a coherent or PCIe part is narrowed by subsystem.
     - name: "nvidia.blackwell"
       labels:
         "kata.feature.node.kubernetes.io/nvidia-blackwell": "true"
-      matchFeatures:
-        - feature: pci.device
-          matchExpressions:
-            vendor: { op: In, value: ["10de"] }
-            class: { op: In, value: ["0302"] }
-            # GB100: devid 0x2900-0x297f (pcilibs_rs::cc::CHIPS), minus
-            # 0x2941-0x297f, which holds the two GB200 ids C2C_DEVIDS lists
-            # (0x2941, 0x297e) plus a handful of unassigned ids past them.
-            # GB110: devid 0x3180-0x31ff, minus 0x31c0-0x31cf, which holds the
-            # GB300 id C2C_DEVIDS lists (0x31c2). GB102/GB112/GB20x are
-            # workstation dies, not HGX baseboards, and excluded entirely.
-            device: { op: InRegexp, value: ["^29[0-3][0-9a-f]$", "^2940$", "^31[89ab][0-9a-f]$", "^31[def][0-9a-f]$"] }
-    - name: "nvidia.c2c"
-      labels:
-        "kata.feature.node.kubernetes.io/nvidia-c2c": "true"
-      matchFeatures:
-        - feature: pci.device
-          matchExpressions:
-            vendor: { op: In, value: ["10de"] }
-            class: { op: In, value: ["0302"] }
-            # Coherent attachment requires a VFIO variant independently of CC support.
-            device: { op: In, value: ["2342", "2343", "2345", "2348", "2941", "297e", "29bc", "31c2", "3041", "307e", "30ff"] }
-    - name: "nvidia.grace-blackwell"
-      labels:
-        "kata.feature.node.kubernetes.io/nvidia-grace-blackwell": "true"
-      matchFeatures:
-        - feature: pci.device
-          matchExpressions:
-            vendor: { op: In, value: ["10de"] }
-            class: { op: In, value: ["0302"] }
-            # The GB200/GB300 half of C2C_DEVIDS, so GBx00 can select those
-            # without taking GH200 with them.
-            device: { op: In, value: ["2941", "297e", "29bc", "31c2"] }
+      matchAny:
+        - matchFeatures:
+            - feature: pci.device
+              matchExpressions:
+                vendor: { op: In, value: ["10de"] }
+                class: { op: In, value: ["0302"] }
+                device: { op: In, value: ["2901", "2920", "29f1", "3182", "3183", "3184", "31fe", "3224", "323e"] }
+        - matchFeatures:
+            - feature: pci.device
+              matchExpressions:
+                vendor: { op: In, value: ["10de"] }
+                class: { op: In, value: ["0302"] }
+                device: { op: In, value: ["293d"] }
+                subsystem_device: { op: In, value: ["197f", "1999"] }
+        - matchFeatures:
+            - feature: pci.device
+              matchExpressions:
+                vendor: { op: In, value: ["10de"] }
+                class: { op: In, value: ["0302"] }
+                device: { op: In, value: ["29bc"] }
+                subsystem_device: { op: In, value: ["1985"] }
+        - matchFeatures:
+            - feature: pci.device
+              matchExpressions:
+                vendor: { op: In, value: ["10de"] }
+                class: { op: In, value: ["0302"] }
+                device: { op: In, value: ["31c2"] }
+                subsystem_device: { op: In, value: ["20e5", "20e6"] }
+    # SXM and coherent Rubin parts. On Rubin, attachment does not decide
+    # whether CC can be enabled, so the Rx00 profile takes both.
     - name: "nvidia.rubin"
       labels:
         "kata.feature.node.kubernetes.io/nvidia-rubin": "true"
@@ -86,19 +98,89 @@ spec:
           matchExpressions:
             vendor: { op: In, value: ["10de"] }
             class: { op: In, value: ["0302"] }
-            # GR100/GR102 ranges from pcilibs_rs::gpu::CHIPS, including C2C.
-            device: { op: InRegexp, value: ["^30[0-9a-f]{2}$"] }
+            device: { op: In, value: ["3002", "3041", "307e", "30ff"] }
+    # Every device id the catalog knows a coherent variant of, by device id
+    # alone, subsystem notwithstanding: the same conservative answer
+    # `pcilibs_rs::cc::is_c2c` gives the binary, so the PCIe profiles never
+    # select a node whose GPU the binary would then refuse plain vfio-pci for.
+    - name: "nvidia.c2c"
+      labels:
+        "kata.feature.node.kubernetes.io/nvidia-c2c": "true"
+      matchFeatures:
+        - feature: pci.device
+          matchExpressions:
+            vendor: { op: In, value: ["10de"] }
+            class: { op: In, value: ["0302"] }
+            device: { op: In, value: ["2342", "2343", "2345", "2348", "2941", "297e", "29bc", "3041", "307e", "30ff", "31a1", "31c2", "31c3"] }
+    # Coherent Blackwell: GB200 and GB300 superchips, which GBx00 selects.
+    - name: "nvidia.grace-blackwell"
+      labels:
+        "kata.feature.node.kubernetes.io/nvidia-grace-blackwell": "true"
+      matchAny:
+        - matchFeatures:
+            - feature: pci.device
+              matchExpressions:
+                vendor: { op: In, value: ["10de"] }
+                class: { op: In, value: ["0302"] }
+                device: { op: In, value: ["2941", "297e", "31a1", "31c3"] }
+        - matchFeatures:
+            - feature: pci.device
+              matchExpressions:
+                vendor: { op: In, value: ["10de"] }
+                class: { op: In, value: ["0302"] }
+                device: { op: In, value: ["29bc"] }
+                subsystem_device: { op: In, value: ["2045"] }
+        - matchFeatures:
+            - feature: pci.device
+              matchExpressions:
+                vendor: { op: In, value: ["10de"] }
+                class: { op: In, value: ["0302"] }
+                device: { op: In, value: ["31c2"] }
+                subsystem_device: { op: In, value: ["21f1"] }
+    # An SXM Blackwell or Rubin GPU beside an InfiniBand ConnectX function.
+    # On those baseboards the NVSwitches are not on PCI and the fabric is
+    # reached through ConnectX management PFs, which NFD cannot tell from
+    # a NIC: the Job qualifies them by VPD and refuses the node otherwise.
     - name: "nvidia.managed-fabric-candidate"
       labels:
         "kata.feature.node.kubernetes.io/nvidia-managed-fabric-candidate": "true"
       matchFeatures:
         - feature: pci.device
           matchExpressions:
-            vendor: { op: In, value: ["10de"] }
-            class: { op: In, value: ["0302"] }
-            device: { op: InRegexp, value: ["^29[0-3][0-9a-f]$", "^2940$", "^31[89ab][0-9a-f]$", "^31[def][0-9a-f]$", "^30[0-9a-f]{2}$"] }
-        - feature: pci.device
-          matchExpressions:
             vendor: { op: In, value: ["15b3"] }
             class: { op: In, value: ["0207"] }
+      matchAny:
+        - matchFeatures:
+            - feature: pci.device
+              matchExpressions:
+                vendor: { op: In, value: ["10de"] }
+                class: { op: In, value: ["0302"] }
+                device: { op: In, value: ["2901", "2920", "29f1", "3182", "3183", "3184", "31fe", "3224", "323e"] }
+        - matchFeatures:
+            - feature: pci.device
+              matchExpressions:
+                vendor: { op: In, value: ["10de"] }
+                class: { op: In, value: ["0302"] }
+                device: { op: In, value: ["293d"] }
+                subsystem_device: { op: In, value: ["197f", "1999"] }
+        - matchFeatures:
+            - feature: pci.device
+              matchExpressions:
+                vendor: { op: In, value: ["10de"] }
+                class: { op: In, value: ["0302"] }
+                device: { op: In, value: ["29bc"] }
+                subsystem_device: { op: In, value: ["1985"] }
+        - matchFeatures:
+            - feature: pci.device
+              matchExpressions:
+                vendor: { op: In, value: ["10de"] }
+                class: { op: In, value: ["0302"] }
+                device: { op: In, value: ["31c2"] }
+                subsystem_device: { op: In, value: ["20e5", "20e6"] }
+        - matchFeatures:
+            - feature: pci.device
+              matchExpressions:
+                vendor: { op: In, value: ["10de"] }
+                class: { op: In, value: ["0302"] }
+                device: { op: In, value: ["3002", "3041", "307e", "30ff"] }
 {{- end }}

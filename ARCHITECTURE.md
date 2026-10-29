@@ -547,6 +547,16 @@ shows the same management slot as Bx00, a ConnectX-9 whose four InfiniBand PFs
 carry the marker; cold-boot and ServiceVM validation remain necessary on
 Bx00/Rx00 hardware.
 
+The NodeFeatureRule that selects candidate nodes is generated from the same
+catalog the binary classifies with (`tests/node_feature_rule.rs`), keyed on
+device id and, where one id is sold as more than one attachment, subsystem
+device id. HGX B300 and GB300 share device id `31c2` and differ only there. The
+one label kept device-only is `nvidia-c2c`, because it mirrors `is_c2c`, which
+has no subsystem id to hand: a node the binary would refuse plain `vfio-pci`
+for must not be selected by a PCIe profile in the first place. A hand-kept id
+list had already drifted from the catalog; `cargo test` now fails when the
+template does.
+
 #### What was rejected
 
 - **A systemd oneshot running this binary at boot**, with a kubelet drop-in that

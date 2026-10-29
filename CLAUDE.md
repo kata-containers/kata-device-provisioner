@@ -31,6 +31,9 @@ src/
   mode.rs    the node-level Mode enum (off | on | devtools | ppcie)
   nfd.rs     the verified fabric fact handed to NFD through its local source
   nvidia.rs  NVIDIA in-band CC mode, reached only via Provisioning::NvidiaInBandCc
+tests/
+  node_feature_rule.rs renders the chart's NodeFeatureRule from the pcilibs-rs
+             catalog; fails while the template is stale
 ```
 
 Supporting another accelerator is one row in `DEVICES`. Do not add a

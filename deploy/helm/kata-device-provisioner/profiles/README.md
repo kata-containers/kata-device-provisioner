@@ -52,11 +52,12 @@ is separate. The profile defaults to CC off. A Rubin node shows the same
 management slot as Bx00, a ConnectX-9 with four marked InfiniBand PFs; ServiceVM
 passthrough validation remains pending.
 
-NFD cannot check the VPD role here. Its managed-fabric candidate label combines
-GPU family with Mellanox PCI presence. A discrete GPU plus an ordinary NIC can
-therefore be selected, but runtime discovery refuses fabric binding. Such a
-PCIe node needs explicit node selection with the PCIe profile. Avoid enabling
-overlapping profiles on a heterogeneous node.
+NFD cannot check the VPD role here. The managed-fabric candidate label combines
+an SXM Blackwell or Rubin GPU with an InfiniBand ConnectX function, so a PCIe
+card beside an ordinary NIC is not a candidate and stays with the PCIe profiles.
+An SXM board whose ConnectX functions turn out to be ordinary NICs is still
+selected, and the Job then refuses fabric binding rather than binding a NIC.
+Avoid enabling overlapping profiles on a heterogeneous node.
 
 Management PF boot rules match PCI address as well as vendor/device IDs because
 ordinary NICs can share those IDs. Reprovision after PCI address changes; these
@@ -202,16 +203,24 @@ config space via node-feature-discovery, so they survive binding. The chart
 ships the NodeFeatureRule that produces them (`nodeFeatureRule.enabled`); NFD
 itself has to be in the cluster already, which kata-deploy can arrange.
 
-`nvidia-gpu` and `nvidia-nvswitch` match vendor and PCI class. GPU-family
-labels use the ranges maintained by pcilibs-rs. The Hopper and Blackwell HGX
-selectors exclude their coherent variants; `GBx00` retains its separate policy.
-`nvidia-rubin` includes coherent variants because attachment does not determine
-whether Rubin can enable CC.
+`nvidia-gpu` and `nvidia-nvswitch` match vendor and PCI class. The GPU-family
+labels are generated from the PCI identity catalog in pcilibs-rs, the same one
+the binary classifies devices with, keyed on device id and, where one id is
+sold as several attachments, subsystem device id: `31c2` with an SXM subsystem
+is HGX B300 and `nvidia-blackwell`, `31c2` with a coherent subsystem is GB300
+and `nvidia-grace-blackwell`. The Hopper and Blackwell HGX labels take SXM
+parts only; `nvidia-rubin` takes coherent variants too, because attachment does
+not determine whether Rubin can enable CC. After a pcilibs-rs bump, regenerate
+the template with `UPDATE_NODE_FEATURE_RULE=1 cargo test --test
+node_feature_rule`; `cargo test` fails while it is out of date.
 
 `nvidia-managed-fabric-candidate` is a selection hint, never proof of a
 management role. `nvidia-c2c` excludes coherent variants, including Rubin, from
-the PCIe profiles. VPD qualification and VFIO driver resolution happen on the
-selected host through pcilibs-rs and the kernel's module aliases.
+the PCIe profiles; it is the one label kept to device ids alone, mirroring the
+binary's `is_c2c`, so a PCIe profile never selects a node whose GPU the binary
+would then refuse plain `vfio-pci` for. VPD qualification and VFIO driver
+resolution happen on the selected host through pcilibs-rs and the kernel's
+module aliases.
 
 After successful fabric provisioning, NFD's `local` source publishes
 `feature.node.kubernetes.io/managed-fabric=true` from the provisioner's feature
