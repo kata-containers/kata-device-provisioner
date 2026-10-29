@@ -505,8 +505,16 @@ only the device half, which over-matches two ids: `0x29bc` and `0x31c2` each
 have non-coherent subsystem variants. The consequence is a refusal on parts that
 would have been fine, chosen over silently mis-binding a coherent one.
 
-The library keeps coherent attachment separate from in-band CC capability.
-A missing VFIO variant is an error even when that GPU supports CC transitions.
+The library only reports the alias table's silence; it does not choose for the
+caller. `vfio_pci` registers a catch-all alias and nothing device-specific, so
+on every kernel the table is silent on an H100, a B200, an NVSwitch and a
+ConnectX PF, and silence has to mean generic `vfio-pci` or no HGX node could be
+provisioned at all. The one exception is decided here, where the device table
+and the catalog meet: a coherent GPU with no variant alias is refused. A table
+that cannot be read at all stays an error.
+
+Coherent attachment and in-band CC capability remain separate: a coherent Rubin
+GPU may raise CC and still needs its variant driver.
 
 ### Fabric management belongs to the ServiceVM
 

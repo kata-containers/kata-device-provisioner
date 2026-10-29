@@ -128,11 +128,11 @@ Every kernel path is a flag (`--sysfs`, `--proc`, `--dev-vfio`,
 instead of a node.
 
 The node needs an IOMMU enabled on the kernel command line and `kmod`
-installed. Every selected device needs a device-specific VFIO mapping in the
-kernel's `modules.alias`; an absent mapping stops provisioning before mode
-changes or binding. The generic VFIO catch-all is insufficient, including for
-ordinary PCIe GPUs and switches. Matching modules are loaded through the host's
-own `modprobe`.
+installed; `vfio-pci` is loaded for you on the first run, using the host's own
+`modprobe`. A device no variant driver claims is bound to plain `vfio-pci`,
+which is right for SXM and PCIe GPUs, NVSwitches and ConnectX PFs alike. A
+coherently attached GPU is the exception: when the kernel's alias table names
+no `nvgrace_gpu_vfio_pci` for it, the node is refused rather than bound.
 
 ## Deploying it
 
