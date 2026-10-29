@@ -19,13 +19,21 @@ job, which means the per-node Job carries no ServiceAccount token.
 src/
   main.rs    CLI (status / apply / uninstall) and stage order
   device.rs  vendor-neutral discovery + the DEVICES table (PCI identity ->
-             provisioning kind + label scheme) -> one DeviceState per device
+             provisioning kind + label scheme) -> one DeviceState per device,
+             plus the NVSwitch fabric pcilibs-rs names on the node
+  drivers.rs which vfio driver claims a device, from the kernel's alias table,
+             and whether it can be claimed now
+  fabric.rs  the NVSwitch fabric a Service VM is given, whole or not at all
   host.rs    host-check: can this node do passthrough at all
   idle.rs    who has the device open, via /proc and /dev/vfio
   modules.rs loading a module with the host's modprobe, and the boot
              configuration that makes the node redo the binding at boot
   mode.rs    the node-level Mode enum (off | on | devtools | ppcie)
+  nfd.rs     the verified fabric fact handed to NFD through its local source
   nvidia.rs  NVIDIA in-band CC mode, reached only via Provisioning::NvidiaInBandCc
+tests/
+  node_feature_rule.rs renders the chart's NodeFeatureRule from the pcilibs-rs
+             catalog; fails while the template is stale
 ```
 
 Supporting another accelerator is one row in `DEVICES`. Do not add a

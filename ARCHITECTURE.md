@@ -59,11 +59,17 @@ boundary in the middle of the set-and-reset pair, which has to be atomic.
 | `bind` | `driver_override` + probe, so the node is usable now without waiting for one |
 | `verify` | Re-read the mode and the binding from the hardware; the run fails loudly if it disagrees |
 
-The label that follows a successful run is written by the dispatcher, not by
-this component — see below.
+The completion label is written by the dispatcher, not this component.
+Verified fabric facts go to NFD through a local feature file after `verify`,
+so VPD access stays in the short-lived, token-free Job. NFD keeps its non-root
+worker and read-only mount. A run withdraws the snapshot before its first
+device write and on any failure, so no earlier positive result outlives a
+failed run, and leaves it in place through a converged run, so NFD never drops
+the label for a no-op.
+This asynchronous hardware label never replaces the dispatcher's admission gate.
 
-Uninstall removes only the boot configuration. Live bindings and CC mode are
-deliberately left alone — see the decisions below.
+Uninstall removes the boot configuration and NFD snapshot. Live bindings and
+CC mode are deliberately left alone — see the decisions below.
 
 ### Ordering
 
@@ -338,18 +344,13 @@ NVIDIA-shaped and populated only through the `NvidiaInBandCc` arm. Generalising
 them now would mean guessing at the shape of an implementation that, on current
 evidence, will not exist.
 
-### Grace superchips are a verify-only platform
+### Coherent attachment and CC capability are separate
 
-On C2C parts (GH200, GB200) confidential computing takes more than the GPU: the
-CPU has to support it too, and Grace does not. `pcilibs_rs::cc` refuses to
-enable CC on those ids, matching `gpu-admin-tools`, so this component never
-*sets* a mode there — there is no mode on that node to set. The provisioner
-still discovers, verifies, binds and labels, and refuses the node outright if
-the release asks for anything but `off`.
-
-This matters because GB200 NVL72 is a primary target of the device plugin.
-The provisioner must be honest that its CC stage is a no-op there rather than
-silently appearing to succeed.
+Hopper and Blackwell coherent GPUs cannot enable in-band CC. Coherent Rubin
+supports that transition according to pcilibs-rs, while still requiring the
+appropriate VFIO variant. Driver selection uses kernel module aliases; the
+library's C2C list prevents falling back to generic VFIO on coherent GPUs.
+Neither decision is inferred from the host CPU model.
 
 ### All GPUs on a node share one mode
 
@@ -506,12 +507,55 @@ only the device half, which over-matches two ids: `0x29bc` and `0x31c2` each
 have non-coherent subsystem variants. The consequence is a refusal on parts that
 would have been fine, chosen over silently mis-binding a coherent one.
 
-The alias table cannot tell "no variant driver exists" from "this kernel has not
-heard of it", but `pcilibs_rs::cc` can, because it already carries the C2C device ids to
-decide where no CC mode can be raised at all — the same set, since C2C is
-what makes the variant driver necessary. So a coherently attached GPU that
-resolves to plain `vfio-pci` is refused with the kernel named as the problem,
-and every other device keeps the fallback.
+The library only reports the alias table's silence; it does not choose for the
+caller. `vfio_pci` registers a catch-all alias and nothing device-specific, so
+on every kernel the table is silent on an H100, a B200, an NVSwitch and a
+ConnectX PF, and silence has to mean generic `vfio-pci` or no HGX node could be
+provisioned at all. The one exception is decided here, where the device table
+and the catalog meet: a coherent GPU with no variant alias is refused. A table
+that cannot be read at all stays an error.
+
+Coherent attachment and in-band CC capability remain separate: a coherent Rubin
+GPU may raise CC and still needs its variant driver.
+
+### Fabric management belongs to the ServiceVM
+
+HGX profiles request `--bind-fabric` independently of GPU CC mode. The fabric
+is what pcilibs-rs names on the node through `Topology::fabric()`: the NVSwitch
+chips on Hx00, the management ConnectX PFs on Bx00/Rx00, qualified by the VPD
+role the HGX guide documents or by sitting beside a marked sibling PF. VFs and
+ordinary NICs are never named, so a candidate node label cannot bypass the
+scan, and the scan runs only on a node with a fabric candidate.
+
+kata-device-plugin advertises that fabric as one `nvidia.com/nvswitch-fabric`
+device, and only once every function the scan names is bound; a Service VM
+requests `nvidia.com/nvswitch-fabric: 1` on every platform. The provisioner
+therefore binds the fabric whole or not at all: a run that would leave any of
+its functions on the host is refused before a GPU is touched, and a fabric
+nobody asked for stays on the host whole.
+
+Management PFs share PCI IDs with ordinary NICs. Their boot configuration must
+therefore match individual BDFs as well as IDs, for generic and variant VFIO
+drivers alike. The udev rules set the override, detach an already-bound driver,
+then load and probe the VFIO driver. The detach rule answers the kernel's bind
+event as well as the add event, so a host driver that wins the race with udev
+at boot is taken back too, and it never matches our own driver, so the takeover
+cannot loop. Address changes require reprovisioning: the rule matches ids and
+address, and validating the VPD role from udev would put a shell helper and a
+VPD read on every boot. No live hardware is touched by tests. A Rubin node
+shows the same management slot as Bx00, a ConnectX-9 whose four InfiniBand PFs
+carry the marker; cold-boot and ServiceVM validation remain necessary on
+Bx00/Rx00 hardware.
+
+The NodeFeatureRule that selects candidate nodes is generated from the same
+catalog the binary classifies with (`tests/node_feature_rule.rs`), keyed on
+device id and, where one id is sold as more than one attachment, subsystem
+device id. HGX B300 and GB300 share device id `31c2` and differ only there. The
+one label kept device-only is `nvidia-c2c`, because it mirrors `is_c2c`, which
+has no subsystem id to hand: a node the binary would refuse plain `vfio-pci`
+for must not be selected by a PCIe profile in the first place. A hand-kept id
+list had already drifted from the catalog; `cargo test` now fails when the
+template does.
 
 #### What was rejected
 

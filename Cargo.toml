@@ -19,11 +19,12 @@ libc = "0.2"
 # disagree about what a device is. `cc` adds in-band CC mode over BAR0 and the
 # FSP mailbox, needing no NVIDIA kernel driver.
 #
-# f6831fa is the merge of in-band CC / PPCIE onto pcilibs-rs main.
-pcilibs-rs = { git = "https://github.com/kata-containers/pcilibs-rs", rev = "f6831fa878ec315ab477ccb88fbf8ec6cbd4cdca", features = ["cc"] }
+# Pinned to pcilibs-rs #38, which names the fabric a Service VM is given
+# (Topology::fabric) and the function behind a cdev; moves to its merge commit.
+pcilibs-rs = { git = "https://github.com/kata-containers/pcilibs-rs", rev = "fbde84835215cc9535dcdda984a2af799fe9e0e7", default-features = false, features = ["cc"] }
 
 [dev-dependencies]
 # The fake sysfs trees the library's own tests use.
-pcilibs-rs = { git = "https://github.com/kata-containers/pcilibs-rs", rev = "f6831fa878ec315ab477ccb88fbf8ec6cbd4cdca", features = ["cc", "testfs"] }
+pcilibs-rs = { git = "https://github.com/kata-containers/pcilibs-rs", rev = "fbde84835215cc9535dcdda984a2af799fe9e0e7", default-features = false, features = ["cc", "testfs"] }
 rstest = "0.27.0"
 tempfile = "3"

@@ -16,9 +16,8 @@
 #     waits `job.waitForNodesSeconds` and then fails the install, which is
 #     deliberate — an empty selection that said nothing would be worse.
 #
-# Selections are already disjoint across the sections: the HGX ones require an
-# NVSwitch, the discrete-card ones refuse anything that has one, and every
-# section but the last excludes Grace superchips by device id.
+# PCIe profiles exclude direct switches and managed-fabric candidates.
+# Avoid overlapping profiles on heterogeneous nodes.
 #
 # These are the ready-made profiles in this directory, verbatim. A fleet of one
 # kind is better served by that single file, which documents its hardware.
@@ -34,6 +33,7 @@ profiles:
   ## Bound for passthrough, confidential computing left off.
   # HGX-Hx00:
   #   enabled: true
+  #   bindFabric: true
   #   ccMode: "off"
   #   nodeFeatureRule:
   #     enabled: true
@@ -48,6 +48,7 @@ profiles:
   ## Per-GPU CC reads back off under PPCIE, which is correct, not a failure.
   # HGX-Hx00-PPCIE:
   #   enabled: true
+  #   bindFabric: true
   #   ccMode: ppcie
   #   nodeFeatureRule:
   #     enabled: true
@@ -63,12 +64,13 @@ profiles:
   ## Bound for passthrough, confidential computing left off.
   # HGX-Bx00:
   #   enabled: true
+  #   bindFabric: true
   #   ccMode: "off"
   #   nodeFeatureRule:
   #     enabled: true
   #   nodeSelector:
   #     kata.feature.node.kubernetes.io/nvidia-blackwell: "true"
-  #     kata.feature.node.kubernetes.io/nvidia-nvswitch: "true"
+  #     kata.feature.node.kubernetes.io/nvidia-managed-fabric-candidate: "true"
   #   job:
   #     parallelism: 2
   #     activeDeadlineSeconds: 3600
@@ -77,12 +79,28 @@ profiles:
   ## board: NVLink encryption puts the switches outside the trusted base.
   # HGX-Bx00-CC:
   #   enabled: true
+  #   bindFabric: true
   #   ccMode: "on"
   #   nodeFeatureRule:
   #     enabled: true
   #   nodeSelector:
   #     kata.feature.node.kubernetes.io/nvidia-blackwell: "true"
-  #     kata.feature.node.kubernetes.io/nvidia-nvswitch: "true"
+  #     kata.feature.node.kubernetes.io/nvidia-managed-fabric-candidate: "true"
+  #   job:
+  #     parallelism: 2
+  #     activeDeadlineSeconds: 3600
+
+  ## Rubin HGX boards — CC off, fabric assigned to a ServiceVM ############
+
+  # HGX-Rx00:
+  #   enabled: true
+  #   ccMode: "off"
+  #   bindFabric: true
+  #   nodeFeatureRule:
+  #     enabled: true
+  #   nodeSelector:
+  #     kata.feature.node.kubernetes.io/nvidia-rubin: "true"
+  #     kata.feature.node.kubernetes.io/nvidia-managed-fabric-candidate: "true"
   #   job:
   #     parallelism: 2
   #     activeDeadlineSeconds: 3600
@@ -101,6 +119,7 @@ profiles:
   #     kata.feature.node.kubernetes.io/nvidia-gpu: "true"
   #   nodeSelectorExpressions:
   #     - "!kata.feature.node.kubernetes.io/nvidia-nvswitch"
+  #     - "!kata.feature.node.kubernetes.io/nvidia-managed-fabric-candidate"
   #     - "!kata.feature.node.kubernetes.io/nvidia-c2c"
   #   job:
   #     parallelism: 10
@@ -116,6 +135,7 @@ profiles:
   #     kata.feature.node.kubernetes.io/nvidia-gpu: "true"
   #   nodeSelectorExpressions:
   #     - "!kata.feature.node.kubernetes.io/nvidia-nvswitch"
+  #     - "!kata.feature.node.kubernetes.io/nvidia-managed-fabric-candidate"
   #     - "!kata.feature.node.kubernetes.io/nvidia-c2c"
   #   job:
   #     parallelism: 10

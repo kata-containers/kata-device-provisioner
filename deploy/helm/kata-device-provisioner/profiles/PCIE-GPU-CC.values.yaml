@@ -26,6 +26,7 @@ profiles:
     # A Grace CPU has no CC of its own, so `on` there is refused, not provisioned.
     nodeSelectorExpressions:
       - "!kata.feature.node.kubernetes.io/nvidia-nvswitch"
+      - "!kata.feature.node.kubernetes.io/nvidia-managed-fabric-candidate"
       - "!kata.feature.node.kubernetes.io/nvidia-c2c"
 
     job:

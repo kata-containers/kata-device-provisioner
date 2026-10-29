@@ -320,6 +320,9 @@ spec:
 {{- else }}
             - apply
             - "--mode={{ .ccMode }}"
+{{- if $root.Values.bindFabric }}
+            - "--bind-fabric"
+{{- end }}
 {{- end }}
             - "--host-root=/host"
           securityContext:
