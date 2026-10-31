@@ -827,6 +827,32 @@ mod tests {
     }
 
     #[rstest]
+    #[case::off(Mode::Off, true)]
+    #[case::on(Mode::On, false)]
+    #[case::devtools(Mode::DevTools, false)]
+    #[case::ppcie(Mode::Ppcie, false)]
+    fn t400_provisions_only_the_vga_function_with_cc_off(
+        sysfs: Fake,
+        #[case] mode: Mode,
+        #[case] supported: bool,
+    ) {
+        let vga = "0000:c1:00.0";
+        sysfs.add_pci_device(vga, 0x10de, 0x1ff2, 0x030000, Some("vfio-pci"));
+        sysfs.add_pci_device("0000:c1:00.1", 0x10de, 0x10fa, 0x040300, Some("vfio-pci"));
+        let states = in_scope(&sysfs.sysfs).unwrap();
+        assert_eq!(states.len(), 1);
+        assert_eq!(states[0].address, vga);
+        assert!(!states[0].cc_capable());
+        assert_eq!(verify_capable(&states, mode).is_ok(), supported);
+        if supported {
+            let passthrough = passthrough_set(&states, mode);
+            assert_eq!(passthrough.len(), 1);
+            assert_eq!(passthrough[0].address, vga);
+            mode_stage(&states, mode).unwrap();
+        }
+    }
+
+    #[rstest]
     fn an_nvswitch_is_not_a_gpu_that_failed_to_support_cc(sysfs: Fake) {
         let states = node(&sysfs, &[NVSWITCH]);
 
