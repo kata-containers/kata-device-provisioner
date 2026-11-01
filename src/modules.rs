@@ -36,6 +36,24 @@ pub fn modules_alias(host_root: &Path, proc: &Path) -> Result<PathBuf> {
         .join("modules.alias"))
 }
 
+pub fn vfio_module(
+    aliases: &Path,
+    vendor: u16,
+    device: u16,
+    allow_generic: bool,
+) -> Result<String> {
+    match pcilibs_rs::vfio::module_for(aliases, vendor, device) {
+        Ok(module) => Ok(module),
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound && allow_generic => {
+            // NotFound can also mean the table is missing. A fallback must not
+            // hide that failure or an unreadable replacement of the table.
+            fs::read_to_string(aliases).with_context(|| format!("read {}", aliases.display()))?;
+            Ok("vfio_pci".to_string())
+        }
+        Err(err) => Err(err.into()),
+    }
+}
+
 pub fn modprobe(host_root: &Path, module: &str) -> Result<()> {
     let modprobe = find_modprobe(host_root)?;
 

@@ -265,6 +265,17 @@ struct VfioDriver {
     driver: String,
 }
 
+fn resolve_module(alias: &Path, state: &DeviceState) -> Result<String> {
+    let module = modules::vfio_module(
+        alias,
+        state.vendor,
+        state.device_id,
+        nvidia::generic_vfio_supported(state),
+    )?;
+    verify_variant_available(state, &module)?;
+    Ok(module)
+}
+
 /// Per device: a Grace GPU needs `nvgrace_gpu_vfio_pci` where the NIC beside
 /// it takes plain `vfio-pci`.
 fn resolve_drivers(
@@ -276,10 +287,8 @@ fn resolve_drivers(
     let mut drivers = HashMap::new();
 
     for state in states {
-        let module = vfio::module_for(&alias, state.vendor, state.device_id)
+        let module = resolve_module(&alias, state)
             .with_context(|| format!("{}: find its vfio module", state.address))?;
-
-        verify_variant_available(state, &module)?;
 
         modules::modprobe(&roots.host_root, &module)
             .with_context(|| format!("{}: load {module}", state.address))?;
@@ -507,6 +516,14 @@ mod tests {
     const NVSWITCH: (u16, u32) = (0x22a3, 0x068000);
     const GH200: (u16, u32) = (0x2342, 0x030200);
     const GB200: (u16, u32) = (0x2941, 0x030200);
+    const GB202: (u16, u32) = (0x2bb5, 0x030200);
+
+    #[fixture]
+    fn alias_file() -> tempfile::NamedTempFile {
+        let file = tempfile::NamedTempFile::new().unwrap();
+        fs::write(file.path(), "alias vfio_pci:v*d*sv*sd*bc*sc*i* vfio_pci\n").unwrap();
+        file
+    }
 
     #[fixture]
     fn sysfs() -> Fake {
@@ -544,6 +561,114 @@ mod tests {
             dev_vfio: dev_vfio.path().to_path_buf(),
             host_root: host.path().to_path_buf(),
         }
+    }
+
+    #[rstest]
+    #[case::h100(H100)]
+    #[case::b200(B200)]
+    #[case::rtx_pro_6000(GB202)]
+    #[case::nvswitch(NVSWITCH)]
+    fn supported_noncoherent_devices_need_no_specific_vfio_alias(
+        sysfs: Fake,
+        alias_file: tempfile::NamedTempFile,
+        #[case] device: (u16, u32),
+        #[values(None, Some("vfio-pci"))] bound: Option<&str>,
+    ) {
+        let states = node(&sysfs, &[device]);
+        sysfs.add_device(&states[0].address, bound);
+        let states = in_scope(&sysfs.sysfs).unwrap();
+
+        assert_eq!(
+            resolve_module(alias_file.path(), &states[0]).unwrap(),
+            "vfio_pci"
+        );
+    }
+
+    #[rstest]
+    #[case::grace_hopper(GH200)]
+    #[case::grace_blackwell(GB200)]
+    #[case::coherent_rubin((0x3041, 0x030200))]
+    #[case::ambiguous_attachment((0x29bc, 0x030200))]
+    #[case::unknown_gpu((0xffff, 0x030200))]
+    fn missing_variant_support_is_not_hidden_by_generic_vfio(
+        sysfs: Fake,
+        alias_file: tempfile::NamedTempFile,
+        #[case] device: (u16, u32),
+    ) {
+        let states = node(&sysfs, &[device]);
+
+        assert!(resolve_module(alias_file.path(), &states[0]).is_err());
+    }
+
+    #[rstest]
+    #[case::grace_hopper(GH200, "nvgrace_gpu_vfio_pci")]
+    #[case::grace_blackwell(GB200, "nvgrace_gpu_vfio_pci")]
+    #[case::device_specific_override(GB202, "custom_vfio_pci")]
+    fn specific_kernel_aliases_still_choose_the_module(
+        sysfs: Fake,
+        alias_file: tempfile::NamedTempFile,
+        #[case] device: (u16, u32),
+        #[case] module: &str,
+    ) {
+        fs::write(
+            alias_file.path(),
+            format!(
+                "alias vfio_pci:v000010DEd{:08X}sv*sd*bc*sc*i* {module}\n",
+                device.0
+            ),
+        )
+        .unwrap();
+        let states = node(&sysfs, &[device]);
+
+        assert_eq!(
+            resolve_module(alias_file.path(), &states[0]).unwrap(),
+            module
+        );
+    }
+
+    #[rstest]
+    #[case::grace_hopper(GH200)]
+    #[case::grace_blackwell(GB200)]
+    #[case::coherent_rubin((0x3041, 0x030200))]
+    fn a_generic_alias_cannot_replace_a_required_variant(
+        sysfs: Fake,
+        alias_file: tempfile::NamedTempFile,
+        #[case] device: (u16, u32),
+    ) {
+        fs::write(
+            alias_file.path(),
+            format!(
+                "alias vfio_pci:v000010DEd{:08X}sv*sd*bc*sc*i* vfio_pci\n",
+                device.0
+            ),
+        )
+        .unwrap();
+        let states = node(&sysfs, &[device]);
+
+        let err = resolve_module(alias_file.path(), &states[0]).unwrap_err();
+        assert!(
+            format!("{err:#}").contains("coherently attached"),
+            "{err:#}"
+        );
+    }
+
+    #[rstest]
+    #[case::missing(false)]
+    #[case::unreadable_contents(true)]
+    fn a_broken_alias_table_is_not_a_generic_vfio_fallback(
+        sysfs: Fake,
+        alias_file: tempfile::NamedTempFile,
+        #[case] invalid_data: bool,
+    ) {
+        let states = node(&sysfs, &[GB202]);
+        if invalid_data {
+            fs::write(alias_file.path(), [0xff]).unwrap();
+        } else {
+            fs::remove_file(alias_file.path()).unwrap();
+        }
+
+        let err = resolve_module(alias_file.path(), &states[0]).unwrap_err();
+        assert!(format!("{err:#}").contains("read "), "{err:#}");
     }
 
     #[rstest]
