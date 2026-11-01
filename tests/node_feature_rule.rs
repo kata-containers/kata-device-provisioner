@@ -1,4 +1,4 @@
-// Copyright (c) 2026 Kata Containers contributors
+// Copyright (c) Kata Containers contributors
 //
 // SPDX-License-Identifier: Apache-2.0
 
