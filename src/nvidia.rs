@@ -23,6 +23,16 @@ pub fn supports_ppcie(device_id: u16) -> bool {
     cc::chip_for(device_id).is_some_and(|chip| chip.hopper)
 }
 
+/// A missing variant alias is expected for supported noncoherent CC GPUs
+/// and NVSwitches. Unknown GPUs cannot establish that generic VFIO is safe.
+pub fn generic_vfio_supported(state: &DeviceState) -> bool {
+    match state.provisioning() {
+        Some(Provisioning::NvidiaInBandCc) => state.cc_capable() && !cc::is_c2c(state.device_id),
+        Some(Provisioning::NvidiaInBandPpcie) => true,
+        None => false,
+    }
+}
+
 /// Kept out of discovery: maps BAR0, needs root, wakes suspended devices.
 pub fn probe_modes(states: &mut [DeviceState]) -> HashMap<String, String> {
     let mut failures = HashMap::new();
