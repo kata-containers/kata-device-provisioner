@@ -415,7 +415,14 @@ fn verify_and_publish(
     drivers: &HashMap<String, VfioDriver>,
 ) -> Result<()> {
     verify(&roots.sysfs(), mode, states, drivers)?;
-    nfd::publish(&roots.host_root, states.iter().any(DeviceState::is_fabric))
+    nfd::publish(&roots.host_root, service_vm_fabric(mode, states))
+}
+
+/// Whether the node's fabric is for a Service VM.  Under PPCIE the switches
+/// belong to the one confidential VM that takes the whole board, so the
+/// Service VM selection hint would only draw a DaemonSet that steals them.
+fn service_vm_fabric(mode: Mode, states: &[DeviceState]) -> bool {
+    mode != Mode::Ppcie && states.iter().any(DeviceState::is_fabric)
 }
 
 /// Busy devices block only runs that would change them, so converged nodes can
@@ -907,6 +914,20 @@ mod tests {
             all_bound
         );
         assert_eq!(host.path().join(nfd::FILE).exists(), all_bound);
+    }
+
+    #[rstest]
+    #[case::off(Mode::Off, true)]
+    #[case::on(Mode::On, true)]
+    #[case::ppcie(Mode::Ppcie, false)]
+    fn ppcie_keeps_the_fabric_from_service_vms(
+        managed_fabric_node: Fake,
+        #[case] mode: Mode,
+        #[case] hinted: bool,
+    ) {
+        let states = in_scope(&managed_fabric_node.sysfs).unwrap().devices;
+        assert!(states.iter().any(DeviceState::is_fabric));
+        assert_eq!(service_vm_fabric(mode, &states), hinted);
     }
 
     #[rstest]
