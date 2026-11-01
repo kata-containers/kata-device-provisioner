@@ -293,7 +293,7 @@ checksum = "384b8ab6d37215f3c5301a95a4accb5d64aa607f1fcb26a11b5303878451b4fe"
 [[package]]
 name = "pcilibs-rs"
 version = "0.1.0"
-source = "git+https://github.com/kata-containers/pcilibs-rs?rev=fbde84835215cc9535dcdda984a2af799fe9e0e7#fbde84835215cc9535dcdda984a2af799fe9e0e7"
+source = "git+https://github.com/kata-containers/pcilibs-rs?rev=3c17b6d#3c17b6d91dac2810c0771f583c25c4244498fc59"
 dependencies = [
  "anyhow",
  "libc",
