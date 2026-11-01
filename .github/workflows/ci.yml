@@ -66,6 +66,8 @@ jobs:
               - 'Cargo.lock'
               - '.cargo/**'
               - '.github/workflows/**'
+              # cargo test compares this generated template with the catalog
+              - 'deploy/helm/kata-device-provisioner/templates/node-feature-rule.yaml'
 
   # Run unit and integration tests.
   test:
