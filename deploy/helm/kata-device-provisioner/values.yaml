@@ -26,6 +26,7 @@
 # Bare YAML 1.1 on/off/yes/no booleans are accepted as on/off.
 #
 # Optional profile fields include:
+#   bindFabric: false        # qualify and bind NVLink management devices for a ServiceVM
 #   ccModeOverrides: []       # modes requested through ccModeLabel on nodes
 #   ccModeLabel: nvidia.com/cc.mode
 #   ccModeStateLabel: ...     # explicit override of the unique default

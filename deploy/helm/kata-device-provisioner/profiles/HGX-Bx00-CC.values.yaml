@@ -1,23 +1,10 @@
-# HGX Bx00: CC mode on, one GPU or the whole board to a confidential VM.
-#
-# Selects Blackwell HGX nodes (Blackwell device ids plus an NVSwitch) — B200,
-# B300, and any other GB100/GB110 board. Each GPU is put into CC mode and
-# bound to vfio-pci. NVLink encryption puts the switches outside the trusted
-# computing base, so `on` covers a workload that uses one GPU or every GPU on
-# the board. Protected PCIe is not a mode this hardware has. Discrete cards,
-# other generations, and GB200/GB300 Grace-Blackwell (superchips, whose Grace
-# CPU has no CC of its own) are out of scope.
-#
-# NVIDIA documents the mode:
-# https://docs.nvidia.com/datacenter/cloud-native/confidential-containers/latest/configure-cc-mode.html
-#
-#   helm install kata-device-provisioner deploy/helm/kata-device-provisioner \
-#     --namespace kata-system --create-namespace \
-#     -f deploy/helm/kata-device-provisioner/profiles/HGX-Bx00-CC.values.yaml
+# The ServiceVM needs the management PFs even when workload GPUs use CC.
+# NFD selects candidates; pcilibs-rs must confirm their VPD management role.
 
 profiles:
   HGX-Bx00-CC:
     enabled: true
+    bindFabric: true
     ccMode: "on"
 
     nodeFeatureRule:
@@ -25,7 +12,7 @@ profiles:
 
     nodeSelector:
       kata.feature.node.kubernetes.io/nvidia-blackwell: "true"
-      kata.feature.node.kubernetes.io/nvidia-nvswitch: "true"
+      kata.feature.node.kubernetes.io/nvidia-managed-fabric-candidate: "true"
 
     job:
       # A mode change resets the GPUs, so this paces how much of the fleet loses

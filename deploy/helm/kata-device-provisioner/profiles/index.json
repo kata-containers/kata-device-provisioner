@@ -15,13 +15,13 @@
           "name": "HGX-Hx00",
           "ccMode": "off",
           "valuesFile": "profiles/HGX-Hx00.values.yaml",
-          "valuesSha256": "ab0aa1f09754bb4f2c2eb1331b19a4fa1075b75570af8232e74a86c34f09c0f9"
+          "valuesSha256": "f9f5af38dfc3e38b1317a1795a1b0cd61b7b384faff8d2dbb05f214a8f701bd4"
         },
         {
           "name": "HGX-Hx00-PPCIE",
           "ccMode": "ppcie",
           "valuesFile": "profiles/HGX-Hx00-PPCIE.values.yaml",
-          "valuesSha256": "ddd62cb2af45afe3d27007ce1c2ed0c0455a230908aec45a6bc18a8ea541ba85"
+          "valuesSha256": "94e085869d1a442b5db088c4fc47859a16d9f1e092c0b635b812bff5149ed279"
         }
       ]
     },
@@ -37,13 +37,26 @@
           "name": "HGX-Bx00",
           "ccMode": "off",
           "valuesFile": "profiles/HGX-Bx00.values.yaml",
-          "valuesSha256": "23f15fedac1d4b5406e02bc759d575f042acbf7da536cb139dfb9d8f08d09029"
+          "valuesSha256": "1bfdeb805dc6e0fb2c16de79c78b4e81aa68477a759424a4ceb87eec8190bdf3"
         },
         {
           "name": "HGX-Bx00-CC",
           "ccMode": "on",
           "valuesFile": "profiles/HGX-Bx00-CC.values.yaml",
-          "valuesSha256": "23789a384c7c9b2e13662176c855275057ca6a2b275638798461f2fff21bef70"
+          "valuesSha256": "9cb0b245d46485e3cddc2b640daa7ca993cb73fc606c0cf5e7d91d27cc2941d0"
+        }
+      ]
+    },
+    {
+      "id": "rubin",
+      "displayName": "HGX Rx00",
+      "modelExamples": [],
+      "profiles": [
+        {
+          "name": "HGX-Rx00",
+          "ccMode": "off",
+          "valuesFile": "profiles/HGX-Rx00.values.yaml",
+          "valuesSha256": "f3bcb4cbd0ab43fd40e31f4d14d9f0ced269dd68897ebddc6e765dc71a697251"
         }
       ]
     },
@@ -56,13 +69,13 @@
           "name": "PCIE-GPU",
           "ccMode": "off",
           "valuesFile": "profiles/PCIE-GPU.values.yaml",
-          "valuesSha256": "63501611b9e7ceedd37effcf8b8902bed95c92571e6fc3a084fd0d976e200472"
+          "valuesSha256": "7435497d0bbbd5e767ff3776bbe731e14fd412695a54af0eeb3d150b93e068c6"
         },
         {
           "name": "PCIE-GPU-CC",
           "ccMode": "on",
           "valuesFile": "profiles/PCIE-GPU-CC.values.yaml",
-          "valuesSha256": "e4663f1eca17ca6db840f3ba241611a1d9974e06cda25714301bba11e141a55b"
+          "valuesSha256": "dfc0c438640c70633e9e9213078f302e9faba489661de79349455beea13644a4"
         }
       ]
     },

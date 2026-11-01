@@ -18,6 +18,7 @@
 profiles:
   HGX-Hx00-PPCIE:
     enabled: true
+    bindFabric: true
     ccMode: ppcie
 
     nodeFeatureRule:

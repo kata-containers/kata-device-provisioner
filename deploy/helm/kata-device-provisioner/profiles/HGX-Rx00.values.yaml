@@ -1,0 +1,16 @@
+# CPU type does not determine GPU attachment or the VFIO driver.
+# NFD selects candidates; pcilibs-rs must confirm their VPD management role.
+# Rx00 passthrough and ServiceVM startup still need hardware validation.
+profiles:
+  HGX-Rx00:
+    enabled: true
+    ccMode: "off"
+    bindFabric: true
+    nodeFeatureRule:
+      enabled: true
+    nodeSelector:
+      kata.feature.node.kubernetes.io/nvidia-rubin: "true"
+      kata.feature.node.kubernetes.io/nvidia-managed-fabric-candidate: "true"
+    job:
+      parallelism: 2
+      activeDeadlineSeconds: 3600
