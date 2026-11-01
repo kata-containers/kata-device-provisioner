@@ -5,7 +5,8 @@
 //! Which vfio driver claims a device, read from the kernel's own alias table,
 //! and whether the device can be claimed now.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::fs;
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
@@ -102,9 +103,12 @@ pub(crate) fn verify_bindable(
 }
 
 /// A device outside an IOMMU group cannot be bound to vfio at all, and
-/// `host::check` only proves the IOMMU is on somewhere on the node. Refused
-/// here, before a GPU mode changes or a fabric function is bound.
-pub(crate) fn verify_groups(states: &[DeviceState]) -> Result<()> {
+/// `host::check` only proves the IOMMU is on somewhere on the node. A group
+/// shared with a function this run leaves to a host driver is refused too:
+/// VFIO gives a VM a group only when every member is bound to vfio or to
+/// nothing, so the hypervisor would fail after the GPU modes changed. Both
+/// are refused here, before a GPU mode changes or a fabric function is bound.
+pub(crate) fn verify_groups(sysfs: &Sysfs, states: &[DeviceState]) -> Result<()> {
     let outside: Vec<String> = states
         .iter()
         .filter(|state| state.iommu_group < 0)
@@ -117,6 +121,46 @@ pub(crate) fn verify_groups(states: &[DeviceState]) -> Result<()> {
             outside.len(),
             states.len(),
             outside.join(", ")
+        );
+    }
+
+    let in_run: HashSet<&str> = states.iter().map(|state| state.address.as_str()).collect();
+    let groups: BTreeMap<i64, &str> = states
+        .iter()
+        .map(|state| (state.iommu_group, state.address.as_str()))
+        .collect();
+    let mut held = Vec::new();
+    for (group, member) in groups {
+        let devices = sysfs.iommu_groups().join(group.to_string()).join("devices");
+        // A group the kernel lists no members for has nothing to check.
+        let Ok(entries) = fs::read_dir(&devices) else {
+            continue;
+        };
+        for entry in entries {
+            let peer = entry
+                .with_context(|| format!("read {}", devices.display()))?
+                .file_name()
+                .to_string_lossy()
+                .into_owned();
+            if in_run.contains(peer.as_str()) {
+                continue;
+            }
+            if let Some(driver) = vfio::current_driver(sysfs, &peer) {
+                if !driver.contains("vfio") {
+                    held.push(format!(
+                        "{peer} ({driver}) shares IOMMU group {group} with {member}"
+                    ));
+                }
+            }
+        }
+    }
+    if !held.is_empty() {
+        bail!(
+            "{} function(s) outside this run are held by a host driver inside a passthrough \
+             device's IOMMU group, which VFIO would refuse to give a VM: {}. Stop their host \
+             services and unbind them, or leave this node out of the run's node selection",
+            held.len(),
+            held.join(", ")
         );
     }
     Ok(())
@@ -210,7 +254,46 @@ pub(crate) mod tests {
             states = in_scope(&sysfs.sysfs).unwrap().devices;
         }
 
-        assert_eq!(verify_groups(&states).is_ok(), accepted);
+        assert_eq!(verify_groups(&sysfs.sysfs, &states).is_ok(), accepted);
+    }
+
+    /// The kernel lists a group's members under iommu_groups; the fixture
+    /// only links a device to its group, so the listing is written here.
+    fn list_group_members(sysfs: &Fake, group: u32, members: &[&str]) {
+        let devices = sysfs
+            .sysfs
+            .iommu_groups()
+            .join(group.to_string())
+            .join("devices");
+        std::fs::create_dir_all(&devices).unwrap();
+        for member in members {
+            std::os::unix::fs::symlink(sysfs.device(member), devices.join(member)).unwrap();
+        }
+    }
+
+    #[rstest]
+    #[case::peer_held_by_a_host_driver(Some("mlx5_core"), false)]
+    #[case::peer_unbound(None, true)]
+    #[case::peer_already_on_vfio(Some("vfio-pci"), true)]
+    fn a_group_shared_with_a_host_held_function_is_refused(
+        sysfs: Fake,
+        #[case] peer_driver: Option<&str>,
+        #[case] accepted: bool,
+    ) {
+        let gpu = node(&sysfs, &[H100])[0].address.clone();
+        let peer = "0000:00:00.1";
+        sysfs.add_pci_device(peer, 0x15b3, 0x1021, 0x020000, peer_driver);
+        sysfs.set_iommu_group(&gpu, 7);
+        sysfs.set_iommu_group(peer, 7);
+        list_group_members(&sysfs, 7, &[&gpu, peer]);
+        let states = in_scope(&sysfs.sysfs).unwrap().devices;
+        assert_eq!(
+            states.len(),
+            1,
+            "the NIC is out of scope, the GPU is the run"
+        );
+
+        assert_eq!(verify_groups(&sysfs.sysfs, &states).is_ok(), accepted);
     }
 
     /// The kernel names the variant module with underscores and sysfs names
