@@ -42,8 +42,10 @@ top of it.
 ## Do not
 
 - Shell out to `nvidia-smi`, `gpu-admin-tools`, `lspci`, or `driverctl`.
-  Use `pcilibs-rs`. The host's `modprobe`, run under a `chroot`
-  into `--host-root`, is the one exception, and it is deliberate: see below.
+  Use `pcilibs-rs`. The host's `modprobe`, and under `--p2p-rdma` its
+  `mlxconfig` or `mstconfig` for the ATS setting in ConnectX firmware, run
+  under a `chroot` into `--host-root`, are the exceptions, and they are
+  deliberate: see below.
 - Replace that `modprobe` with libkmod or the `kmod` crate. Whether a `.ko.zst`
   loads would then depend on how the *container's* libkmod was built, and the
   image would have to carry libkmod plus its compression libraries. kata-deploy

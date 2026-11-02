@@ -40,7 +40,7 @@ One per-node Job running `apply` once:
 
 ```text
 host-check -> discover -> verify-idle -> resolve-drivers
-           -> cc-mode -> reset -> persist -> bind -> verify
+           -> cc-mode -> reset -> persist -> p2p -> bind -> verify
 ```
 
 The stages are functions in one process, not ordered `initContainers`. Splitting
@@ -56,8 +56,9 @@ boundary in the middle of the set-and-reset pair, which has to be atomic.
 | `cc-mode` | Persist the desired CC mode in the GPU's EEPROM (`pcilibs_rs::cc`) |
 | `reset` | Function-level reset; the new mode only takes effect after it |
 | `persist` | Write the node's `modules-load.d` and `modprobe.d` configuration, plus a `udev` rule for anything that binds only through `driver_override`, so the binding survives a reboot |
+| `p2p` | With `--p2p-rdma`: Direct Translated P2P on the downstream ports of every switch a passthrough device sits behind, on top of the ACS bits the kernel set, with a udev rule in `persist` that re-adds it at boot. ATS in the ConnectX firmware under those ports is checked, and switched on, before `cc-mode`: it applies at the next boot, and a node that needs one is refused whole |
 | `bind` | `driver_override` + probe, so the node is usable now without waiting for one |
-| `verify` | Re-read the mode and the binding from the hardware; the run fails loudly if it disagrees |
+| `verify` | Re-read the mode, the binding and the P2P bits from the hardware; the run fails loudly if it disagrees |
 
 The label that follows a successful run is written by the dispatcher, not by
 this component — see below.
@@ -531,6 +532,60 @@ and every other device keeps the fallback.
   of this and needs nothing on the node, but takes a reboot to change and is the
   image builder's decision rather than the cluster's. Nodes built that way are
   already provisioned as far as binding goes; `status` and `verify` still work.
+
+### The GPUDirect RDMA path is the switch's and the NIC firmware's
+
+NVIDIA's HGX Shared NVSwitch guide (19.0, sections 2.6 and 2.7) has the host
+write `0x5D` into every ACS control register on the node and turn `ATS_ENABLED`
+on in every ConnectX, for GPUDirect RDMA between a GPU and the NIC beside it.
+Read against what the kernel does, most of the first step is already done:
+with an IOMMU on, `pci_enable_acs` sets source validation, request and
+completion redirect and upstream forwarding on every port that has them at
+enumeration, and the IOMMU groups follow from those bits. A DGX booted with no
+ACS script has every GPU and NIC in a group of its own. The one bit the guide's
+value adds that the kernel leaves alone is Direct Translated P2P: with it, a
+request the NIC has already translated through ATS is routed across the switch
+to the GPU; without it, the request climbs to the root complex and comes back
+down. It is a routing bit, not an isolation bit, so setting it after boot
+changes no group.
+
+So `--p2p-rdma` sets that one bit and nothing else, on the downstream ports of
+every switch a passthrough device sits behind. The ports come from the bus as
+sysfs nests it, through `pcilibs_rs::pcie::switch_ports`, not from a table: on
+the DGX the NIC and the GPU hang off one ConnectX-9 switch, on an HGX H100 off
+a Broadcom PEX, and the walk is the same. The write goes through the port's
+`config` file, read back first so the kernel's bits stay, and it survives a
+reset of the port because `pci_restore_state` reads the register back and ORs
+the kernel's bits into whatever is there.
+
+What does not survive is a reboot, and the kernel sets its bits before udev
+sees the port, so the rule `persist` writes runs the node's `setpci` on the
+port's `add` event with the mask form, `0x40:0x40`, which adds the bit and
+leaves the rest. The rule is keyed on the address as well as the ids: it
+describes this node's switch, not a card type, and a node whose PCI addresses
+changed is reprovisioned. The kernel's own `pci=config_acs=` parameter would do
+the same at enumeration with nothing in udev, but it is a command-line change,
+which is the image builder's to make and takes a reboot to change, the same
+reason `vfio-pci.ids=` was rejected above.
+
+ATS is the other half and it is not the host's to set at runtime: a ConnectX
+exposes the capability only when `ATS_ENABLED` is on in its firmware, and the
+IOMMU driver enables it on the device from there, for the host's own domain
+and for the VM's when the device is attached. The firmware setting applies at
+the next boot. A ConnectX under the switch whose firmware has it off is
+switched on through the node's own `mlxconfig` or `mstconfig`, under the same
+`chroot` the host's `modprobe` runs in, and the run then fails and says so:
+the setting is in place, the node has to go round once, and a node labelled
+provisioned must not carry the slow path until someone notices. Porting the
+tools' register protocol into `pcilibs-rs` the way the CC mode was ported was
+considered and is out of proportion for one boolean; the host tool is the
+exception the `modprobe` one already is.
+
+ATS is also why the confidential profiles leave the flag off. A device with
+ATS presents addresses as already translated and the root complex trusts them
+past the IOMMU, which is the standard ATS trust model and fine for a device the
+VM owns outright, but not something a confidential VM's threat model grants a
+device before TDISP.
 
 ### Runtime state is not reverted on uninstall
 

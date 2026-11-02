@@ -11,7 +11,7 @@ use std::fs;
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 
 use anyhow::{bail, Context, Result};
 use pcilibs_rs::DRIVER_VFIO_PCI_TYPE;
@@ -56,11 +56,27 @@ pub fn vfio_module(
 
 pub fn modprobe(host_root: &Path, module: &str) -> Result<()> {
     let modprobe = find_modprobe(host_root)?;
+    let output = run_host(host_root, &modprobe, &[module])?;
+    if output.status.success() {
+        return Ok(());
+    }
 
+    bail!(
+        "host modprobe failed for {module} ({}): {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr).trim()
+    )
+}
+
+/// Run one of the node's own programs, as kata-deploy runs the host's
+/// modprobe: `chroot` into the host root first, so the program finds its own
+/// libraries and the node's kernel, not the image's. `program` is the path as
+/// it looks after the chroot, which [`find_host_program`] returns.
+pub fn run_host(host_root: &Path, program: &str, args: &[&str]) -> Result<Output> {
     let root = std::ffi::CString::new(host_root.as_os_str().as_bytes())
         .with_context(|| format!("{} contains a NUL", host_root.display()))?;
-    let mut command = Command::new(&modprobe);
-    command.arg(module);
+    let mut command = Command::new(program);
+    command.args(args);
 
     // SAFETY: chroot and chdir are async-signal-safe, all pre_exec allows.
     unsafe {
@@ -75,21 +91,13 @@ pub fn modprobe(host_root: &Path, module: &str) -> Result<()> {
         });
     }
 
-    let output = command.output().with_context(|| {
+    command.output().with_context(|| {
         format!(
-            "run host {modprobe} for {module} after chroot to {} (needs root and CAP_SYS_CHROOT)",
+            "run host {program} {} after chroot to {} (needs root and CAP_SYS_CHROOT)",
+            args.join(" "),
             host_root.display()
         )
-    })?;
-    if output.status.success() {
-        return Ok(());
-    }
-
-    bail!(
-        "host modprobe failed for {module} ({}): {}",
-        output.status,
-        String::from_utf8_lossy(&output.stderr).trim()
-    )
+    })
 }
 
 /// The stack every passthrough node needs up before anything can be claimed.
@@ -134,7 +142,10 @@ fn udev_rule(vendor: u16, device: u16, module: &str, driver: &str) -> String {
 /// service and nothing gates the kubelet.
 ///
 /// Returns the devices the rule is carrying.
-pub fn persist(host_root: &Path, claims: &[Claim]) -> Result<Vec<String>> {
+///
+/// `extra_rules` are udev rules another stage wants carried in the same file,
+/// written whole.
+pub fn persist(host_root: &Path, claims: &[Claim], extra_rules: &[String]) -> Result<Vec<String>> {
     let mut modules: Vec<&str> = VFIO_STACK.to_vec();
     let mut ids = Vec::new();
     let mut overridden = Vec::new();
@@ -162,6 +173,7 @@ pub fn persist(host_root: &Path, claims: &[Claim]) -> Result<Vec<String>> {
     }
     ids.sort();
     ids.dedup();
+    rules.extend(extra_rules.iter().cloned());
     rules.sort();
     rules.dedup();
 
@@ -211,13 +223,23 @@ fn write(path: &Path, contents: &str) -> Result<()> {
 
 /// Returned as the path looks *after* the chroot, not as it is mounted here.
 fn find_modprobe(host_root: &Path) -> Result<String> {
-    MODPROBE_CANDIDATES
+    find_host_program(host_root, MODPROBE_CANDIDATES, "install kmod on the node")
+}
+
+/// The first of `candidates` the node has, as the path looks after the
+/// chroot. `hint` says what to install when none is there.
+pub fn find_host_program(host_root: &Path, candidates: &[&str], hint: &str) -> Result<String> {
+    candidates
         .iter()
         .find(|path| host_root.join(path.trim_start_matches('/')).is_file())
         .map(|path| (*path).to_string())
         .with_context(|| {
             format!(
-                "no modprobe under {}: install kmod on the node",
+                "no {} under {}: {hint}",
+                Path::new(candidates[0])
+                    .file_name()
+                    .map(|name| name.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
                 host_root.display()
             )
         })
@@ -309,7 +331,7 @@ mod tests {
             claim("0000:06:00.0", 0x22a3, "vfio_pci"),
         ];
 
-        assert!(persist(host.path(), &devices).unwrap().is_empty());
+        assert!(persist(host.path(), &devices, &[]).unwrap().is_empty());
 
         // One entry for vfio_pci, not one per spelling of it.
         assert_eq!(
@@ -331,7 +353,7 @@ mod tests {
             claim("0000:65:00.0", 0x2330, "vfio_pci"),
         ];
 
-        let overridden = persist(host.path(), &devices).unwrap();
+        let overridden = persist(host.path(), &devices, &[]).unwrap();
 
         assert_eq!(overridden, ["0009:01:00.0"]);
         assert_eq!(
@@ -398,7 +420,7 @@ mod tests {
             claim("0019:01:00.0", 0x2342, "nvgrace_gpu_vfio_pci"),
         ];
 
-        persist(host.path(), &devices).unwrap();
+        persist(host.path(), &devices, &[]).unwrap();
 
         assert_eq!(read(&host, UDEV_RULES).lines().count(), 1);
     }
@@ -409,6 +431,7 @@ mod tests {
         persist(
             host.path(),
             &[claim("0009:01:00.0", 0x2342, "nvgrace_gpu_vfio_pci")],
+            &[],
         )
         .unwrap();
 
@@ -426,7 +449,12 @@ mod tests {
     /// No rule file at all, rather than an empty one.
     #[rstest]
     fn writes_no_rule_when_nothing_needs_an_override(host: TempDir) {
-        persist(host.path(), &[claim("0000:65:00.0", 0x2330, "vfio_pci")]).unwrap();
+        persist(
+            host.path(),
+            &[claim("0000:65:00.0", 0x2330, "vfio_pci")],
+            &[],
+        )
+        .unwrap();
 
         assert!(!host.path().join(UDEV_RULES).exists());
     }
@@ -434,7 +462,7 @@ mod tests {
     #[rstest]
     fn uninstall_removes_both_files_and_is_idempotent(host: TempDir) {
         let devices = [claim("0000:65:00.0", 0x2330, "vfio_pci")];
-        persist(host.path(), &devices).unwrap();
+        persist(host.path(), &devices, &[]).unwrap();
 
         unpersist(host.path()).unwrap();
         unpersist(host.path()).unwrap();

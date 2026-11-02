@@ -37,7 +37,8 @@ waiting for a reboot:
 ```text
 /etc/modules-load.d/kata-device-provisioner.conf   vfio, vfio_iommu_type1, vfio-pci
 /etc/modprobe.d/kata-device-provisioner.conf       options vfio-pci ids=10de:2330,10de:22a3
-/etc/udev/rules.d/71-kata-device-provisioner.rules for anything needing driver_override
+/etc/udev/rules.d/71-kata-device-provisioner.rules for anything needing driver_override,
+                                                   and --p2p-rdma's ACS bit
 ```
 
 That is the whole mechanism. No service runs at boot and nothing is ordered
@@ -49,6 +50,18 @@ rather than decided here, so a Grace GPU gets `nvgrace_gpu_vfio_pci` and the
 GPU beside it gets plain `vfio-pci` without either being named in this tree.
 The variant drivers match on nothing but `driver_override`, which no modprobe
 file can write, so those devices are carried by the udev rule instead.
+
+With `--p2p-rdma`, which the HGX profiles pass, a run also sets up the PCIe
+path GPUDirect RDMA takes between a GPU and the ConnectX beside it (HGX Shared
+NVSwitch guide 19.0, sections 2.6 and 2.7). The kernel already sets the ACS
+bits that isolate IOMMU groups; the run adds Direct Translated P2P on the
+downstream ports of every switch a passthrough device sits behind, so a request
+the NIC has translated through ATS crosses the switch instead of climbing to
+the root complex, and a udev rule running the node's `setpci` re-adds that one
+bit at boot. ATS is a setting in the NIC's firmware: a ConnectX under those
+ports whose firmware has it off is switched on through the node's `mlxconfig`
+or `mstconfig`, and the run then stops, because the setting applies at the
+next boot. Reboot the node and run again.
 
 The work is driverless. CC mode is set in-band over BAR0 and the FSP mailbox
 via [`pcilibs_rs::cc`](https://github.com/kata-containers/pcilibs-rs), so the NVIDIA
@@ -87,6 +100,7 @@ kata-device-provisioner status --all     # every passthrough-capable device
 kata-device-provisioner status --probe   # read live CC mode (root, maps BAR0)
 
 kata-device-provisioner apply --mode on  # provision this node
+kata-device-provisioner apply --mode off --p2p-rdma  # and the GPUDirect RDMA path
 kata-device-provisioner uninstall        # remove the boot config
 ```
 
@@ -99,7 +113,9 @@ instead of a node.
 
 The node needs an IOMMU enabled on the kernel command line and `kmod`
 installed; `vfio-pci` is loaded for you on the first run, using the host's own
-`modprobe`.
+`modprobe`. `--p2p-rdma` needs `pciutils` on the node for the rule that
+restores the ACS bit at boot, and MFT's `mlxconfig` or mstflint's `mstconfig`
+to switch ATS on in a ConnectX whose firmware has it off.
 
 ## Deploying it
 

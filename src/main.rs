@@ -8,6 +8,7 @@ mod idle;
 mod mode;
 mod modules;
 mod nvidia;
+mod p2p;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -77,6 +78,12 @@ enum Command {
         #[arg(long)]
         mode: Mode,
 
+        /// Set up the PCIe path GPUDirect RDMA takes between a GPU and the
+        /// ConnectX beside it: Direct Translated P2P on the switch ports
+        /// between them, ATS in the NIC's firmware.
+        #[arg(long)]
+        p2p_rdma: bool,
+
         #[command(flatten)]
         roots: Roots,
     },
@@ -91,7 +98,11 @@ enum Command {
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Status { probe, all, roots } => status(probe, all, &roots.sysfs()),
-        Command::Apply { mode, roots } => apply(mode, &roots),
+        Command::Apply {
+            mode,
+            p2p_rdma,
+            roots,
+        } => apply(mode, p2p_rdma, &roots),
         Command::Uninstall { roots } => uninstall(&roots),
     }
 }
@@ -149,6 +160,19 @@ fn status(probe: bool, all: bool, sysfs: &Sysfs) -> Result<()> {
         }
     }
 
+    // Reads extended config space, which is root's, as the probe already is.
+    if probe {
+        let in_scope: Vec<DeviceState> = states
+            .iter()
+            .filter(|state| state.in_scope())
+            .cloned()
+            .collect();
+        match p2p::report(sysfs, &in_scope) {
+            Ok(lines) => lines.iter().for_each(|line| println!("{line}")),
+            Err(err) => eprintln!("p2p: {err:#}"),
+        }
+    }
+
     for (address, err) in &failures {
         eprintln!("{address}: CC mode unreadable: {err}");
     }
@@ -156,7 +180,7 @@ fn status(probe: bool, all: bool, sysfs: &Sysfs) -> Result<()> {
     Ok(())
 }
 
-fn apply(mode: Mode, roots: &Roots) -> Result<()> {
+fn apply(mode: Mode, p2p_rdma: bool, roots: &Roots) -> Result<()> {
     let sysfs = roots.sysfs();
 
     host::check(&sysfs)?;
@@ -174,6 +198,16 @@ fn apply(mode: Mode, roots: &Roots) -> Result<()> {
     // Before any reset, so a missing driver is not found out half way through.
     let drivers = resolve_drivers(&sysfs, roots, &passthrough)?;
 
+    // The firmware half applies at the next boot, so a node that needs one is
+    // refused here, before a GPU is touched.
+    let p2p = match p2p_rdma {
+        true => Some(p2p::plan(&sysfs, &passthrough)?),
+        false => None,
+    };
+    if let Some(plan) = &p2p {
+        p2p::verify_ats(&roots.host_root, &sysfs, plan)?;
+    }
+
     // Re-read in `nvidia::apply`: hardware may change after this safety check.
     let unreadable = nvidia::probe_modes(&mut states);
     verify_idle(
@@ -185,7 +219,10 @@ fn apply(mode: Mode, roots: &Roots) -> Result<()> {
     mode_stage(&states, mode)?;
 
     // Before binding, so a crash leaves a node that comes back bound.
-    persist(&roots.host_root, &passthrough, &drivers)?;
+    persist(&roots.host_root, &passthrough, &drivers, p2p.as_ref())?;
+    if let Some(plan) = &p2p {
+        p2p::apply_acs(&sysfs, plan)?;
+    }
 
     for state in &passthrough {
         let driver = &drivers[&state.address].driver;
@@ -197,7 +234,7 @@ fn apply(mode: Mode, roots: &Roots) -> Result<()> {
 
     release(&sysfs, &states, &passthrough)?;
 
-    verify(&sysfs, mode, &passthrough, &drivers)?;
+    verify(&sysfs, mode, &passthrough, &drivers, p2p.as_ref())?;
 
     println!(
         "node provisioned: mode={mode}, {} devices",
@@ -306,6 +343,7 @@ fn persist(
     host_root: &Path,
     states: &[DeviceState],
     drivers: &HashMap<String, VfioDriver>,
+    p2p: Option<&p2p::Plan>,
 ) -> Result<()> {
     let claims: Vec<_> = states
         .iter()
@@ -318,8 +356,18 @@ fn persist(
         })
         .collect();
 
-    let overridden = modules::persist(host_root, &claims)?;
+    let rules = match p2p {
+        Some(plan) => p2p::rules(host_root, plan)?,
+        None => Vec::new(),
+    };
+    let overridden = modules::persist(host_root, &claims, &rules)?;
     println!("boot config written for {} devices", states.len());
+    if !rules.is_empty() {
+        println!(
+            "{} switch port(s) get Direct Translated P2P back at boot through a udev rule",
+            rules.len()
+        );
+    }
     if !overridden.is_empty() {
         println!(
             "{} through a udev rule, which is what carries driver_override: {}",
@@ -428,11 +476,15 @@ fn verify(
     mode: Mode,
     states: &[DeviceState],
     drivers: &HashMap<String, VfioDriver>,
+    p2p: Option<&p2p::Plan>,
 ) -> Result<()> {
     // A stage reports what it asked for; this reports what is true.
     for state in states {
         vfio::verify_bound(sysfs, &state.address, &drivers[&state.address].driver)?;
         nvidia::verify_mode(state, mode)?;
+    }
+    if let Some(plan) = p2p {
+        p2p::verify(sysfs, plan)?;
     }
 
     Ok(())
@@ -504,6 +556,7 @@ fn in_scope(sysfs: &Sysfs) -> Result<Vec<DeviceState>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::p2p::tests::{gpu, switch};
     use pcilibs_rs::cc::CcMode;
     use pcilibs_rs::testfs::{self, Fake};
     use rstest::{fixture, rstest};
@@ -736,6 +789,7 @@ mod tests {
                 module: "vfio_pci".to_string(),
                 driver: "vfio-pci".to_string(),
             }],
+            &[],
         )
         .unwrap();
 
@@ -1004,5 +1058,33 @@ mod tests {
         let states = node(&sysfs, &[device]);
 
         assert_eq!(verify_capable(&states, mode).is_ok(), expected);
+    }
+
+    /// The rule that re-sets Direct Translated P2P rides in the same file as
+    /// the driver_override rules, so one uninstall removes both.
+    #[rstest]
+    fn persist_carries_the_p2p_rules() {
+        let switch = switch();
+        let host = tempfile::tempdir().unwrap();
+        fs::create_dir_all(host.path().join("usr/bin")).unwrap();
+        fs::write(host.path().join("usr/bin/setpci"), "").unwrap();
+        let states = gpu(&switch);
+        let drivers = HashMap::from([(
+            states[0].address.clone(),
+            VfioDriver {
+                module: "vfio_pci".to_string(),
+                driver: "vfio-pci".to_string(),
+            },
+        )]);
+        let plan = p2p::plan(&switch.sysfs, &states).unwrap();
+
+        persist(host.path(), &states, &drivers, Some(&plan)).unwrap();
+
+        let rules = fs::read_to_string(
+            host.path()
+                .join("etc/udev/rules.d/71-kata-device-provisioner.rules"),
+        )
+        .unwrap();
+        assert_eq!(rules.matches("setpci").count(), 3, "{rules}");
     }
 }

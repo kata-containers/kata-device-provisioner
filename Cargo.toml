@@ -19,11 +19,12 @@ libc = "0.2"
 # disagree about what a device is. `cc` adds in-band CC mode over BAR0 and the
 # FSP mailbox, needing no NVIDIA kernel driver.
 #
-# Includes the MNOC partial-word reply fix needed to enable CC on GB202.
-pcilibs-rs = { git = "https://github.com/kata-containers/pcilibs-rs", rev = "c26e25c520a92463d21281d549142b983014d64d", features = ["cc"] }
+# Includes the MNOC partial-word reply fix needed to enable CC on GB202, and
+# `pcie`, the switch ports and the ACS and ATS reads `--p2p-rdma` builds on.
+pcilibs-rs = { git = "https://github.com/kata-containers/pcilibs-rs", rev = "f3d3fb9d571f10e057ca877c2e1e6d71ee6aa99f", features = ["cc"] }
 
 [dev-dependencies]
 # The fake sysfs trees the library's own tests use.
-pcilibs-rs = { git = "https://github.com/kata-containers/pcilibs-rs", rev = "c26e25c520a92463d21281d549142b983014d64d", features = ["cc", "testfs"] }
+pcilibs-rs = { git = "https://github.com/kata-containers/pcilibs-rs", rev = "f3d3fb9d571f10e057ca877c2e1e6d71ee6aa99f", features = ["cc", "testfs"] }
 rstest = "0.27.0"
 tempfile = "3"
