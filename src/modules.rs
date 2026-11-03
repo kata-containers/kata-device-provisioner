@@ -114,6 +114,15 @@ pub fn needs_driver_override(module: &str) -> bool {
     module.replace('-', "_") != "vfio_pci"
 }
 
+/// What the rule runs after the module is up. udev handles the add events of
+/// the devices in parallel, and the Grace GPUs of one socket probe into the
+/// same EGM node: the second probe fails with EEXIST while the first is still
+/// registering it. The lock serialises the probes, and the loop retries a
+/// device the first attempt left unbound. `$$` is udev's spelling of `$`.
+const PROBE: &str = "exec 9>/run/kata-device-provisioner.lock; flock 9; n=0; \
+until [ -e /sys/bus/pci/devices/%k/driver ] || [ $$n -ge 5 ]; do \
+echo %k > /sys/bus/pci/drivers_probe; n=$$((n+1)); sleep 1; done";
+
 /// Keyed on the ids rather than an address, so the binding follows the card if
 /// it moves slot.
 ///
@@ -124,7 +133,7 @@ fn udev_rule(vendor: u16, device: u16, module: &str, driver: &str) -> String {
         "ACTION==\"add\", SUBSYSTEM==\"pci\", ATTR{{vendor}}==\"0x{vendor:04x}\", \
          ATTR{{device}}==\"0x{device:04x}\", ATTR{{driver_override}}=\"{driver}\", \
          RUN{{builtin}}+=\"kmod load {module}\", \
-         RUN+=\"/bin/sh -c 'echo %k > /sys/bus/pci/drivers_probe'\"\n"
+         RUN+=\"/bin/sh -c '{PROBE}'\"\n"
     )
 }
 
@@ -373,7 +382,32 @@ mod tests {
             "ACTION==\"add\", SUBSYSTEM==\"pci\", ATTR{vendor}==\"0x10de\", \
              ATTR{device}==\"0x2342\", ATTR{driver_override}=\"nvgrace_gpu_vfio_pci\", \
              RUN{builtin}+=\"kmod load nvgrace_gpu_vfio_pci\", \
-             RUN+=\"/bin/sh -c 'echo %k > /sys/bus/pci/drivers_probe'\"\n"
+             RUN+=\"/bin/sh -c 'exec 9>/run/kata-device-provisioner.lock; flock 9; n=0; \
+             until [ -e /sys/bus/pci/devices/%k/driver ] || [ $$n -ge 5 ]; do \
+             echo %k > /sys/bus/pci/drivers_probe; n=$$((n+1)); sleep 1; done'\"\n"
+        );
+    }
+
+    /// The probe runs in a shell udev hands `%k` to; a bare `$` would be a
+    /// udev substitution, so the shell variables are spelled `$$`.
+    #[rstest]
+    fn the_probe_serialises_and_retries() {
+        let rule = udev_rule(
+            0x10de,
+            0x2941,
+            "nvgrace_gpu_vfio_pci",
+            "nvgrace_gpu_vfio_pci",
+        );
+
+        assert!(rule.contains("flock 9;"), "{rule}");
+        assert!(rule.contains("[ $$n -ge 5 ]"), "{rule}");
+        assert!(
+            rule.contains("echo %k > /sys/bus/pci/drivers_probe"),
+            "{rule}"
+        );
+        assert!(
+            !rule.contains(" $n"),
+            "a bare $n is a udev substitution: {rule}"
         );
     }
 
