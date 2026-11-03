@@ -420,9 +420,10 @@ binary installed on the host and nothing for an operator to debug when it works.
 
 This is only sound because the NVIDIA host driver is absent, which `host-check`
 enforces: `ids=` claims a device that nothing else wanted, rather than racing a
-driver that already has it. On a node with `nvidia.ko` installed this mechanism
-would lose the race, and so would every other mechanism short of the kernel
-command line.
+driver that already has it. On a node with `nvidia.ko` installed, the host
+driver, autoloaded for the GPU's PCI identity, binds the GPU before `vfio-pci`
+loads (seen on a DGX OS node, 2026-11-02); taking it back would need the
+bind-event rule the management PFs have, or the kernel command line.
 
 It also means the node needs no help from the cluster to come back, which is the
 invariant the whole persistence question exists to serve. A rebooted node keeps
@@ -537,10 +538,10 @@ nobody asked for stays on the host whole.
 Management PFs share PCI IDs with ordinary NICs. Their boot configuration must
 therefore match individual BDFs as well as IDs, for generic and variant VFIO
 drivers alike. The udev rules set the override, detach an already-bound driver,
-then load and probe the VFIO driver. The detach rule answers the kernel's bind
-event as well as the add event, so a host driver that wins the race with udev
-at boot is taken back too, and it never matches our own driver, so the takeover
-cannot loop. Address changes require reprovisioning: the rule matches ids and
+then load and probe the VFIO driver. The detach rule matches the kernel's bind
+event as well as the add event, so a function a host driver bound before udev
+ran the rule is unbound and taken over too; the rule excludes our own driver,
+so the takeover does not repeat. Address changes require reprovisioning: the rule matches ids and
 address, and validating the VPD role from udev would put a shell helper and a
 VPD read on every boot. No live hardware is touched by tests. A Rubin node
 shows the same management slot as Bx00, a ConnectX-9 whose four InfiniBand PFs
