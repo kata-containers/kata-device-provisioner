@@ -185,7 +185,7 @@ fn apply(mode: Mode, roots: &Roots) -> Result<()> {
     mode_stage(&states, mode)?;
 
     // Before binding, so a crash leaves a node that comes back bound.
-    persist(&roots.host_root, &passthrough, &drivers)?;
+    persist(roots, &passthrough, &drivers)?;
 
     for state in &passthrough {
         let driver = &drivers[&state.address].driver;
@@ -303,7 +303,7 @@ fn resolve_drivers(
 }
 
 fn persist(
-    host_root: &Path,
+    roots: &Roots,
     states: &[DeviceState],
     drivers: &HashMap<String, VfioDriver>,
 ) -> Result<()> {
@@ -318,7 +318,9 @@ fn persist(
         })
         .collect();
 
-    let overridden = modules::persist(host_root, &claims)?;
+    let aliases = modules::modules_alias(&roots.host_root, &roots.proc)?;
+    let stack = modules::vfio_stack(&aliases);
+    let overridden = modules::persist(&roots.host_root, &claims, &stack)?;
     println!("boot config written for {} devices", states.len());
     if !overridden.is_empty() {
         println!(
@@ -736,6 +738,7 @@ mod tests {
                 module: "vfio_pci".to_string(),
                 driver: "vfio-pci".to_string(),
             }],
+            &["vfio"],
         )
         .unwrap();
 

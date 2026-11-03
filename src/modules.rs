@@ -92,8 +92,31 @@ pub fn modprobe(host_root: &Path, module: &str) -> Result<()> {
     )
 }
 
-/// The stack every passthrough node needs up before anything can be claimed.
-const VFIO_STACK: &[&str] = &["vfio", "vfio_iommu_type1"];
+/// The stack every passthrough node needs up before anything can be claimed:
+/// the vfio core and, where the kernel still ships it, the legacy type1
+/// container. Kernels built with CONFIG_IOMMUFD_VFIO_CONTAINER have no
+/// `vfio_iommu_type1` module at all, and listing it makes
+/// systemd-modules-load fail the file on every boot.
+pub fn vfio_stack(aliases: &Path) -> Vec<&'static str> {
+    let mut stack = vec!["vfio"];
+    if kernel_ships(aliases, "vfio_iommu_type1.ko") {
+        stack.push("vfio_iommu_type1");
+    }
+    stack
+}
+
+/// Whether the kernel the alias table belongs to has the module, loadable or
+/// built in.
+fn kernel_ships(aliases: &Path, module_file: &str) -> bool {
+    let Some(dir) = aliases.parent() else {
+        return false;
+    };
+    ["modules.dep", "modules.builtin"].iter().any(|index| {
+        fs::read_to_string(dir.join(index))
+            .map(|text| text.contains(module_file))
+            .unwrap_or(false)
+    })
+}
 
 const MODULES_LOAD: &str = "etc/modules-load.d/kata-device-provisioner.conf";
 const MODPROBE: &str = "etc/modprobe.d/kata-device-provisioner.conf";
@@ -134,8 +157,8 @@ fn udev_rule(vendor: u16, device: u16, module: &str, driver: &str) -> String {
 /// service and nothing gates the kubelet.
 ///
 /// Returns the devices the rule is carrying.
-pub fn persist(host_root: &Path, claims: &[Claim]) -> Result<Vec<String>> {
-    let mut modules: Vec<&str> = VFIO_STACK.to_vec();
+pub fn persist(host_root: &Path, claims: &[Claim], stack: &[&str]) -> Result<Vec<String>> {
+    let mut modules: Vec<&str> = stack.to_vec();
     let mut ids = Vec::new();
     let mut overridden = Vec::new();
     let mut rules = Vec::new();
@@ -236,6 +259,43 @@ mod tests {
         tempfile::tempdir().unwrap()
     }
 
+    /// What a kernel with the type1 container module persists.
+    const LEGACY_STACK: &[&str] = &["vfio", "vfio_iommu_type1"];
+
+    fn kernel_dir(host: &TempDir, dep: &str, builtin: &str) -> std::path::PathBuf {
+        let dir = host.path().join("lib/modules/7.0.0-test");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join("modules.dep"), dep).unwrap();
+        fs::write(dir.join("modules.builtin"), builtin).unwrap();
+        dir.join("modules.alias")
+    }
+
+    #[rstest]
+    fn lists_the_type1_container_when_the_kernel_ships_it(host: TempDir) {
+        let aliases = kernel_dir(
+            &host,
+            "kernel/drivers/vfio/vfio.ko.zst:\nkernel/drivers/vfio/vfio_iommu_type1.ko.zst: kernel/drivers/vfio/vfio.ko.zst\n",
+            "",
+        );
+
+        assert_eq!(vfio_stack(&aliases), LEGACY_STACK);
+    }
+
+    /// CONFIG_IOMMUFD_VFIO_CONTAINER kernels have no such module.
+    #[rstest]
+    fn leaves_out_the_type1_container_the_kernel_does_not_have(host: TempDir) {
+        let aliases = kernel_dir(&host, "kernel/drivers/vfio/vfio.ko.zst:\n", "");
+
+        assert_eq!(vfio_stack(&aliases), ["vfio"]);
+    }
+
+    #[rstest]
+    fn finds_a_built_in_type1_container(host: TempDir) {
+        let aliases = kernel_dir(&host, "", "kernel/drivers/vfio/vfio_iommu_type1.ko\n");
+
+        assert_eq!(vfio_stack(&aliases), LEGACY_STACK);
+    }
+
     fn add_file(root: &TempDir, path: &str) {
         let path = root.path().join(path.trim_start_matches('/'));
         fs::create_dir_all(path.parent().unwrap()).unwrap();
@@ -309,7 +369,9 @@ mod tests {
             claim("0000:06:00.0", 0x22a3, "vfio_pci"),
         ];
 
-        assert!(persist(host.path(), &devices).unwrap().is_empty());
+        assert!(persist(host.path(), &devices, LEGACY_STACK)
+            .unwrap()
+            .is_empty());
 
         // One entry for vfio_pci, not one per spelling of it.
         assert_eq!(
@@ -331,7 +393,7 @@ mod tests {
             claim("0000:65:00.0", 0x2330, "vfio_pci"),
         ];
 
-        let overridden = persist(host.path(), &devices).unwrap();
+        let overridden = persist(host.path(), &devices, LEGACY_STACK).unwrap();
 
         assert_eq!(overridden, ["0009:01:00.0"]);
         assert_eq!(
@@ -398,7 +460,7 @@ mod tests {
             claim("0019:01:00.0", 0x2342, "nvgrace_gpu_vfio_pci"),
         ];
 
-        persist(host.path(), &devices).unwrap();
+        persist(host.path(), &devices, LEGACY_STACK).unwrap();
 
         assert_eq!(read(&host, UDEV_RULES).lines().count(), 1);
     }
@@ -409,6 +471,7 @@ mod tests {
         persist(
             host.path(),
             &[claim("0009:01:00.0", 0x2342, "nvgrace_gpu_vfio_pci")],
+            LEGACY_STACK,
         )
         .unwrap();
 
@@ -426,7 +489,12 @@ mod tests {
     /// No rule file at all, rather than an empty one.
     #[rstest]
     fn writes_no_rule_when_nothing_needs_an_override(host: TempDir) {
-        persist(host.path(), &[claim("0000:65:00.0", 0x2330, "vfio_pci")]).unwrap();
+        persist(
+            host.path(),
+            &[claim("0000:65:00.0", 0x2330, "vfio_pci")],
+            LEGACY_STACK,
+        )
+        .unwrap();
 
         assert!(!host.path().join(UDEV_RULES).exists());
     }
@@ -434,7 +502,7 @@ mod tests {
     #[rstest]
     fn uninstall_removes_both_files_and_is_idempotent(host: TempDir) {
         let devices = [claim("0000:65:00.0", 0x2330, "vfio_pci")];
-        persist(host.path(), &devices).unwrap();
+        persist(host.path(), &devices, LEGACY_STACK).unwrap();
 
         unpersist(host.path()).unwrap();
         unpersist(host.path()).unwrap();
