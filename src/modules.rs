@@ -123,9 +123,16 @@ fn selector(actions: &str, vendor: u16, device: u16, address: Option<&str>) -> S
 /// already up when the event arrives attaches nothing, so the rule does both.
 fn udev_rule(selector: &str, module: &str, driver: &str) -> String {
     format!(
-        "{selector}, ATTR{{driver_override}}=\"{driver}\", \
-         RUN{{builtin}}+=\"kmod load {module}\", \
-         RUN+=\"/bin/sh -c 'echo %k > /sys/bus/pci/drivers_probe'\"\n"
+        "{selector}, ATTR{{driver_override}}=\"{driver}\", {}\n",
+        load_and_probe(module)
+    )
+}
+
+/// The action half both rules end with, after the override write.
+fn load_and_probe(module: &str) -> String {
+    format!(
+        "RUN{{builtin}}+=\"kmod load {module}\", \
+         RUN+=\"/bin/sh -c 'echo %k > /sys/bus/pci/drivers_probe'\""
     )
 }
 
@@ -166,18 +173,17 @@ pub fn persist(host_root: &Path, claims: &[Claim]) -> Result<Vec<String>> {
                     .with_context(|| format!("invalid PCI address {}", claim.address))?;
                 // The host driver may claim the function before udev sees the
                 // add event, or probe it between the DRIVER check and the
-                // override write, so the detach rule also answers the bind
+                // override write, so the detach rule also matches the bind
                 // event the kernel sends for every driver but ours, and
                 // finishes the takeover itself. The probe rule, after it in
                 // file order, covers the unclaimed function.
                 let detach = selector("add|bind", claim.vendor, claim.device, Some(&address));
                 rules.push(format!(
                     "{detach}, DRIVER==\"?*\", DRIVER!=\"{driver}\", \
-                     ATTR{{driver_override}}=\"{driver}\", ATTR{{driver/unbind}}=\"{address}\", \
-                     RUN{{builtin}}+=\"kmod load {module}\", \
-                     RUN+=\"/bin/sh -c 'echo %k > /sys/bus/pci/drivers_probe'\"\n",
-                    driver = claim.driver,
-                    module = claim.module
+                     ATTR{{driver_override}}=\"{driver}\", \
+                     ATTR{{driver/unbind}}=\"{address}\", {}\n",
+                    load_and_probe(&claim.module),
+                    driver = claim.driver
                 ));
                 rules.push(udev_rule(
                     &selector("add", claim.vendor, claim.device, Some(&address)),
