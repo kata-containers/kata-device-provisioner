@@ -403,13 +403,16 @@ The durable half of a run is a couple of configuration files:
 
 ```text
 # /etc/modules-load.d/kata-device-provisioner.conf
-vfio
-vfio_iommu_type1
 vfio-pci
 
 # /etc/modprobe.d/kata-device-provisioner.conf
 options vfio-pci ids=10de:2330,10de:22a3
 ```
+
+Only the claiming modules are listed. modprobe loads `vfio` as their
+dependency, and `vfio` declares `vfio_iommu_type1` as a soft dependency, which
+modprobe loads where the kernel ships it and skips where it does not: kernels
+built with `CONFIG_IOMMUFD_VFIO_CONTAINER` have no such module.
 
 `ids=` is `vfio-pci`'s own parameter for the `new_id` mechanism: the driver
 registers a dynamic PCI match for each id as the module loads, and the devices

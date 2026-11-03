@@ -92,9 +92,6 @@ pub fn modprobe(host_root: &Path, module: &str) -> Result<()> {
     )
 }
 
-/// The stack every passthrough node needs up before anything can be claimed.
-const VFIO_STACK: &[&str] = &["vfio", "vfio_iommu_type1"];
-
 const MODULES_LOAD: &str = "etc/modules-load.d/kata-device-provisioner.conf";
 const MODPROBE: &str = "etc/modprobe.d/kata-device-provisioner.conf";
 const UDEV_RULES: &str = "etc/udev/rules.d/71-kata-device-provisioner.rules";
@@ -135,7 +132,10 @@ fn udev_rule(vendor: u16, device: u16, module: &str, driver: &str) -> String {
 ///
 /// Returns the devices the rule is carrying.
 pub fn persist(host_root: &Path, claims: &[Claim]) -> Result<Vec<String>> {
-    let mut modules: Vec<&str> = VFIO_STACK.to_vec();
+    // No `vfio_iommu_type1` entry: CONFIG_IOMMUFD_VFIO_CONTAINER kernels have
+    // no such module and systemd-modules-load fails on it. It is a softdep of
+    // `vfio`, so modprobe loads it where it exists.
+    let mut modules: Vec<&str> = Vec::new();
     let mut ids = Vec::new();
     let mut overridden = Vec::new();
     let mut rules = Vec::new();
@@ -312,10 +312,7 @@ mod tests {
         assert!(persist(host.path(), &devices).unwrap().is_empty());
 
         // One entry for vfio_pci, not one per spelling of it.
-        assert_eq!(
-            read(&host, MODULES_LOAD),
-            "vfio\nvfio_iommu_type1\nvfio_pci\n"
-        );
+        assert_eq!(read(&host, MODULES_LOAD), "vfio_pci\n");
         // Two GPUs of the same model are one id, and the NVSwitch is there too.
         assert_eq!(
             read(&host, MODPROBE),
@@ -342,7 +339,7 @@ mod tests {
 
         assert_eq!(
             read(&host, MODULES_LOAD),
-            "vfio\nvfio_iommu_type1\nnvgrace_gpu_vfio_pci\nvfio_pci\n",
+            "nvgrace_gpu_vfio_pci\nvfio_pci\n",
             "the variant module has to be up for the override to land"
         );
 
@@ -412,10 +409,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(
-            read(&host, MODULES_LOAD),
-            "vfio\nvfio_iommu_type1\nnvgrace_gpu_vfio_pci\n"
-        );
+        assert_eq!(read(&host, MODULES_LOAD), "nvgrace_gpu_vfio_pci\n");
         assert_eq!(
             read(&host, MODPROBE),
             "",
