@@ -245,10 +245,8 @@ fn release(sysfs: &Sysfs, states: &[DeviceState], passthrough: &[DeviceState]) -
             continue;
         }
 
-        // Substring, because a variant driver is named after the one it
-        // stands in for: nvgrace_gpu_vfio_pci, mlx5_vfio_pci.
-        let Some(driver) = vfio::current_driver(sysfs, &state.address)
-            .filter(|driver| driver.replace('-', "_").contains("vfio"))
+        let Some(driver) =
+            vfio::current_driver(sysfs, &state.address).filter(|driver| drivers::is_vfio(driver))
         else {
             continue;
         };
@@ -441,7 +439,7 @@ fn writable(
             let current = vfio::current_driver(sysfs, &state.address);
 
             if !passthrough.iter().any(|kept| kept.address == state.address) {
-                return current.is_some_and(|driver| driver.replace('-', "_").contains("vfio"));
+                return current.is_some_and(|driver| drivers::is_vfio(&driver));
             }
 
             match drivers.get(&state.address) {

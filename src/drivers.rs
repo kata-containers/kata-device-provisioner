@@ -15,6 +15,13 @@ use pcilibs_rs::{cc, vfio, Sysfs, DRIVER_VFIO_PCI_TYPE};
 use crate::device::{DeviceState, Provisioning};
 use crate::modules;
 
+/// Whether `driver` is a vfio driver: `vfio-pci` or a variant named after it,
+/// `nvgrace_gpu_vfio_pci`, `mlx5_vfio_pci`, so a substring, with the dash and
+/// underscore spellings sysfs and modprobe use folded.
+pub(crate) fn is_vfio(driver: &str) -> bool {
+    driver.replace('-', "_").contains("vfio")
+}
+
 /// Generic `vfio-pci` is right for every device no variant driver claims: an
 /// SXM or PCIe GPU, an NVSwitch, a ConnectX PF. It is wrong for a coherently
 /// attached GPU, which would reach a VM with its memory missing, so one of
@@ -132,10 +139,8 @@ pub(crate) fn verify_groups(sysfs: &Sysfs, states: &[DeviceState]) -> Result<()>
     let mut held = Vec::new();
     for (group, member) in groups {
         let devices = sysfs.iommu_groups().join(group.to_string()).join("devices");
-        // A group the kernel lists no members for has nothing to check.
-        let Ok(entries) = fs::read_dir(&devices) else {
-            continue;
-        };
+        let entries =
+            fs::read_dir(&devices).with_context(|| format!("read {}", devices.display()))?;
         for entry in entries {
             let peer = entry
                 .with_context(|| format!("read {}", devices.display()))?
@@ -146,7 +151,7 @@ pub(crate) fn verify_groups(sysfs: &Sysfs, states: &[DeviceState]) -> Result<()>
                 continue;
             }
             if let Some(driver) = vfio::current_driver(sysfs, &peer) {
-                if !driver.contains("vfio") {
+                if !is_vfio(&driver) {
                     held.push(format!(
                         "{peer} ({driver}) shares IOMMU group {group} with {member}"
                     ));
@@ -241,17 +246,22 @@ pub(crate) mod tests {
     }
 
     #[rstest]
-    #[case::grouped(true, true)]
-    #[case::outside_any_group(false, false)]
+    #[case::grouped(true, true, true)]
+    #[case::group_without_a_member_listing(true, false, false)]
+    #[case::outside_any_group(false, false, false)]
     fn a_target_outside_an_iommu_group_is_refused(
         sysfs: Fake,
         #[case] grouped: bool,
+        #[case] listed: bool,
         #[case] accepted: bool,
     ) {
         let mut states = node(&sysfs, &[H100]);
         if grouped {
             sysfs.set_iommu_group(&states[0].address, 7);
             states = in_scope(&sysfs.sysfs).unwrap().devices;
+        }
+        if listed {
+            list_group_members(&sysfs, 7, &[&states[0].address]);
         }
 
         assert_eq!(verify_groups(&sysfs.sysfs, &states).is_ok(), accepted);
