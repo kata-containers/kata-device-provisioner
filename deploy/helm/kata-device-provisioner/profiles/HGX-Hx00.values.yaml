@@ -15,6 +15,13 @@ profiles:
     enabled: true
     ccMode: "off"
 
+    # The PCIe path GPUDirect RDMA takes between a GPU and the ConnectX beside
+    # it: Direct Translated P2P on the switch ports between them, ATS in the
+    # NIC's firmware. A NIC whose firmware had ATS off is switched on, and the
+    # run then stops until the node has rebooted. Needs pciutils, and MFT or
+    # mstflint, on the node.
+    p2pRdma: true
+
     nodeFeatureRule:
       enabled: true
 
