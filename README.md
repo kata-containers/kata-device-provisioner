@@ -136,7 +136,9 @@ which is right for SXM and PCIe GPUs, NVSwitches and ConnectX PFs alike. A
 coherently attached GPU is the exception: when the kernel's alias table names
 no `nvgrace_gpu_vfio_pci` for it, the node is refused rather than bound. Every
 target must sit in an IOMMU group; one that does not is refused before any GPU
-is touched.
+is touched, and so is a group holding devices that go to different VMs, two
+GPUs or a GPU beside a fabric function, since VFIO gives a group to one VM at
+a time.
 
 ## Deploying it
 

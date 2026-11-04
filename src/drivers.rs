@@ -13,6 +13,7 @@ use anyhow::{bail, Context, Result};
 use pcilibs_rs::{cc, vfio, Sysfs, DRIVER_VFIO_PCI_TYPE};
 
 use crate::device::{DeviceState, Provisioning};
+use crate::mode::Mode;
 use crate::modules;
 
 /// Whether `driver` is a vfio driver: `vfio-pci` or a variant named after it,
@@ -113,9 +114,13 @@ pub(crate) fn verify_bindable(
 /// `host::check` only proves the IOMMU is on somewhere on the node. A group
 /// shared with a function this run leaves to a host driver is refused too:
 /// VFIO gives a VM a group only when every member is bound to vfio or to
-/// nothing, so the hypervisor would fail after the GPU modes changed. Both
-/// are refused here, before a GPU mode changes or a fabric function is bound.
-pub(crate) fn verify_groups(sysfs: &Sysfs, states: &[DeviceState]) -> Result<()> {
+/// nothing, so the hypervisor would fail after the GPU modes changed. So is
+/// a group holding devices that go to different VMs, two GPUs or a GPU and
+/// a fabric function, since VFIO gives a group to one VM at a time; the
+/// fabric's functions go to one VM together, and under PPCIE the whole
+/// board does. All are refused here, before a GPU mode changes or a fabric
+/// function is bound.
+pub(crate) fn verify_groups(sysfs: &Sysfs, states: &[DeviceState], mode: Mode) -> Result<()> {
     let outside: Vec<String> = states
         .iter()
         .filter(|state| state.iommu_group < 0)
@@ -129,6 +134,32 @@ pub(crate) fn verify_groups(sysfs: &Sysfs, states: &[DeviceState]) -> Result<()>
             states.len(),
             outside.join(", ")
         );
+    }
+
+    if mode != Mode::Ppcie {
+        let mut by_group: BTreeMap<i64, Vec<&DeviceState>> = BTreeMap::new();
+        for state in states {
+            by_group.entry(state.iommu_group).or_default().push(state);
+        }
+        let split: Vec<String> = by_group
+            .iter()
+            .filter(|(_, members)| {
+                let gpus = members.iter().filter(|member| !member.is_fabric()).count();
+                gpus > 1 || (gpus == 1 && members.len() > 1)
+            })
+            .map(|(group, members)| {
+                let addresses: Vec<&str> = members.iter().map(|m| m.address.as_str()).collect();
+                format!("group {group}: {}", addresses.join(", "))
+            })
+            .collect();
+        if !split.is_empty() {
+            bail!(
+                "{} IOMMU group(s) hold passthrough devices that go to different VMs, which VFIO \
+                 gives to one VM at a time: {}",
+                split.len(),
+                split.join("; ")
+            );
+        }
     }
 
     let in_run: HashSet<&str> = states.iter().map(|state| state.address.as_str()).collect();
@@ -264,7 +295,62 @@ pub(crate) mod tests {
             list_group_members(&sysfs, 7, &[&states[0].address]);
         }
 
-        assert_eq!(verify_groups(&sysfs.sysfs, &states).is_ok(), accepted);
+        assert_eq!(
+            verify_groups(&sysfs.sysfs, &states, Mode::Off).is_ok(),
+            accepted
+        );
+    }
+
+    #[rstest]
+    #[case::two_gpus(Mode::Off, false)]
+    #[case::two_gpus_under_ppcie(Mode::Ppcie, true)]
+    fn a_group_holding_devices_for_different_vms_is_refused(
+        sysfs: Fake,
+        #[case] mode: Mode,
+        #[case] accepted: bool,
+    ) {
+        let states = node(&sysfs, &[H100, H100]);
+        let addresses: Vec<String> = states.iter().map(|s| s.address.clone()).collect();
+        for address in &addresses {
+            sysfs.set_iommu_group(address, 7);
+        }
+        let members: Vec<&str> = addresses.iter().map(String::as_str).collect();
+        list_group_members(&sysfs, 7, &members);
+        let states = in_scope(&sysfs.sysfs).unwrap().devices;
+
+        assert_eq!(verify_groups(&sysfs.sysfs, &states, mode).is_ok(), accepted);
+    }
+
+    #[rstest]
+    fn the_fabrics_functions_share_a_group_and_a_gpu_may_not_join_them(managed_fabric_node: Fake) {
+        let fabric: Vec<String> = in_scope(&managed_fabric_node.sysfs)
+            .unwrap()
+            .devices
+            .iter()
+            .map(|s| s.address.clone())
+            .collect();
+        for address in &fabric {
+            managed_fabric_node.set_iommu_group(address, 7);
+        }
+        let members: Vec<&str> = fabric.iter().map(String::as_str).collect();
+        list_group_members(&managed_fabric_node, 7, &members);
+        let states = in_scope(&managed_fabric_node.sysfs).unwrap().devices;
+        assert!(verify_groups(&managed_fabric_node.sysfs, &states, Mode::Off).is_ok());
+
+        let gpu = "0000:07:00.0";
+        managed_fabric_node.add_pci_device(gpu, 0x10de, H100.0, H100.1, None);
+        managed_fabric_node.set_iommu_group(gpu, 7);
+        std::os::unix::fs::symlink(
+            managed_fabric_node.device(gpu),
+            managed_fabric_node
+                .sysfs
+                .iommu_groups()
+                .join("7/devices")
+                .join(gpu),
+        )
+        .unwrap();
+        let states = in_scope(&managed_fabric_node.sysfs).unwrap().devices;
+        assert!(verify_groups(&managed_fabric_node.sysfs, &states, Mode::Off).is_err());
     }
 
     /// The kernel lists a group's members under iommu_groups; the fixture
@@ -303,7 +389,10 @@ pub(crate) mod tests {
             "the NIC is out of scope, the GPU is the run"
         );
 
-        assert_eq!(verify_groups(&sysfs.sysfs, &states).is_ok(), accepted);
+        assert_eq!(
+            verify_groups(&sysfs.sysfs, &states, Mode::Off).is_ok(),
+            accepted
+        );
     }
 
     /// The kernel names the variant module with underscores and sysfs names
