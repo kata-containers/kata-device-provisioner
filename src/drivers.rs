@@ -6,7 +6,8 @@
 //! table is the only record of which vfio driver claims a device. A list of
 //! device ids here would go stale as the kernel adds ids.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
+use std::fs;
 use std::path::Path;
 
 use anyhow::{bail, Context, Result};
@@ -153,6 +154,137 @@ pub(crate) fn load<'a>(
         });
     }
     Ok(targets)
+}
+
+type Groups<'a> = BTreeMap<u32, Vec<&'a DeviceState>>;
+
+/// A device outside an IOMMU group cannot be bound to vfio at all, and
+/// `host::check` only proves the IOMMU is on somewhere on the node.
+fn by_group<'a>(states: &[&'a DeviceState]) -> Result<Groups<'a>> {
+    let mut groups = Groups::new();
+    let mut outside = Vec::new();
+    for state in states {
+        match state.iommu_group {
+            Some(group) => groups.entry(group).or_default().push(*state),
+            None => outside.push(format!("{} ({})", state.address, state.device_name)),
+        }
+    }
+    if !outside.is_empty() {
+        bail!(
+            "{} of the node's {} passthrough devices are in no IOMMU group and cannot be bound \
+             to vfio: {}",
+            outside.len(),
+            states.len(),
+            outside.join(", ")
+        );
+    }
+    Ok(groups)
+}
+
+/// VFIO gives a group to one VM at a time, so a group holding two GPUs, or a
+/// GPU and a fabric function, would have the hypervisor fail after the GPU
+/// modes changed. The fabric's functions go to one VM together.
+fn verify_one_vm_per_group(groups: &Groups) -> Result<()> {
+    let split: Vec<String> = groups
+        .iter()
+        .filter(|(_, members)| {
+            members.len() > 1 && members.iter().any(|member| !member.is_fabric())
+        })
+        .map(|(group, members)| {
+            let addresses: Vec<&str> = members.iter().map(|m| m.address.as_str()).collect();
+            format!("group {group}: {}", addresses.join(", "))
+        })
+        .collect();
+    if !split.is_empty() {
+        bail!(
+            "{} IOMMU group(s) hold passthrough devices that go to different VMs, which VFIO \
+             gives to one VM at a time: {}",
+            split.len(),
+            split.join("; ")
+        );
+    }
+    Ok(())
+}
+
+const PCI_BASE_CLASS_BRIDGE: u32 = 0x06;
+
+/// The kernel hands a group to VFIO once no member's driver owns its DMA. A
+/// vfio driver and `pci-stub` leave DMA to the user, and so does the port
+/// driver on a bridge, which declares `driver_managed_dma`. Every GPU shares
+/// its group with the root port and usually a PCIe switch above it, so
+/// counting bridges would refuse every GPU.
+fn blocks_group(sysfs: &Sysfs, peer: &str, driver: &str) -> Result<bool> {
+    if is_vfio(driver) || driver == "pci-stub" {
+        return Ok(false);
+    }
+    let device = sysfs
+        .device(peer)
+        .with_context(|| format!("{peer}: not a PCI address"))?;
+    let class = pcilibs_rs::attr_hex(&device, "class")
+        .with_context(|| format!("{peer}: read its PCI class"))?;
+    Ok(class >> 16 != PCI_BASE_CLASS_BRIDGE)
+}
+
+/// VFIO gives a VM a group only when every member is bound to vfio or to
+/// nothing, so a member this run leaves to a host driver would have the
+/// hypervisor fail after the GPU modes changed.
+fn verify_peers(sysfs: &Sysfs, groups: &Groups) -> Result<()> {
+    let in_run: HashSet<&str> = groups
+        .values()
+        .flatten()
+        .map(|state| state.address.as_str())
+        .collect();
+    let mut held = Vec::new();
+    for (group, members) in groups {
+        let devices = sysfs.iommu_groups().join(group.to_string()).join("devices");
+        let entries =
+            fs::read_dir(&devices).with_context(|| format!("read {}", devices.display()))?;
+        for entry in entries {
+            let peer = entry
+                .with_context(|| format!("read {}", devices.display()))?
+                .file_name()
+                .to_string_lossy()
+                .into_owned();
+            if in_run.contains(peer.as_str()) {
+                continue;
+            }
+            let Some(driver) = vfio::current_driver(sysfs, &peer) else {
+                continue;
+            };
+            if blocks_group(sysfs, &peer, &driver)? {
+                held.push(format!(
+                    "{peer} ({driver}) shares IOMMU group {group} with {}",
+                    members[0].address
+                ));
+            }
+        }
+    }
+    if !held.is_empty() {
+        bail!(
+            "{} function(s) outside this run are held by a host driver inside a passthrough \
+             device's IOMMU group, which VFIO would refuse to give a VM: {}. Stop their host \
+             services and unbind them, or leave this node out of the run's node selection",
+            held.len(),
+            held.join(", ")
+        );
+    }
+    Ok(())
+}
+
+/// A group VFIO cannot hand to a VM fails in the hypervisor, after the GPU
+/// modes changed, so it is refused before the mode stage.
+pub(crate) fn verify_groups(
+    sysfs: &Sysfs,
+    states: &[DeviceState],
+    fabric: Destination,
+) -> Result<()> {
+    let run: Vec<&DeviceState> = states.iter().filter(|state| fabric.takes(state)).collect();
+    let groups = by_group(&run)?;
+    // Under PPCIE the whole board goes to one VM, shared groups included.
+    if fabric != Destination::PpcieVm {
+        verify_one_vm_per_group(&groups)?;
+    }
+    verify_peers(sysfs, &groups)
 }
 
 #[cfg(test)]
@@ -322,6 +454,100 @@ pub(crate) mod tests {
 
         let err = module_for(alias_file.path(), &states[0]).unwrap_err();
         assert!(format!("{err:#}").contains("read "), "{err:#}");
+    }
+
+    #[rstest]
+    #[case::grouped(true, true, true)]
+    #[case::group_without_a_member_listing(true, false, false)]
+    #[case::outside_any_group(false, false, false)]
+    fn a_target_outside_an_iommu_group_is_refused(
+        sysfs: Fake,
+        #[case] grouped: bool,
+        #[case] listed: bool,
+        #[case] accepted: bool,
+    ) {
+        let mut states = node(&sysfs, &[H100]);
+        if grouped {
+            sysfs.set_iommu_group(&states[0].address, 7);
+            states = in_scope(&sysfs.sysfs).unwrap().devices;
+        }
+        if grouped && !listed {
+            fs::remove_dir_all(sysfs.sysfs.iommu_groups().join("7/devices")).unwrap();
+        }
+
+        assert_eq!(
+            verify_groups(&sysfs.sysfs, &states, Destination::Host).is_ok(),
+            accepted
+        );
+    }
+
+    #[rstest]
+    #[case::two_gpus(Destination::Host, false)]
+    #[case::two_gpus_under_ppcie(Destination::PpcieVm, true)]
+    fn a_group_holding_devices_for_different_vms_is_refused(
+        sysfs: Fake,
+        #[case] fabric: Destination,
+        #[case] accepted: bool,
+    ) {
+        for state in node(&sysfs, &[H100, H100]) {
+            sysfs.set_iommu_group(&state.address, 7);
+        }
+        let states = in_scope(&sysfs.sysfs).unwrap().devices;
+
+        assert_eq!(
+            verify_groups(&sysfs.sysfs, &states, fabric).is_ok(),
+            accepted
+        );
+    }
+
+    #[rstest]
+    fn the_fabrics_functions_share_a_group_and_a_gpu_may_not_join_them(managed_fabric_node: Fake) {
+        let fake = managed_fabric_node;
+        for state in in_scope(&fake.sysfs).unwrap().devices {
+            fake.set_iommu_group(&state.address, 7);
+        }
+        let states = in_scope(&fake.sysfs).unwrap().devices;
+        assert!(verify_groups(&fake.sysfs, &states, Destination::ServiceVm).is_ok());
+
+        let gpu = "0000:07:00.0";
+        fake.add_pci_device(gpu, 0x10de, H100.0, H100.1, None);
+        fake.set_iommu_group(gpu, 7);
+        let states = in_scope(&fake.sysfs).unwrap().devices;
+        assert!(verify_groups(&fake.sysfs, &states, Destination::ServiceVm).is_err());
+    }
+
+    /// The root port and the PCIe switch above a GPU share its group and stay
+    /// on `pcieport`, and the kernel gives VFIO the group anyway.
+    #[rstest]
+    #[case::peer_held_by_a_host_driver(0x020000, Some("mlx5_core"), false)]
+    #[case::peer_unbound(0x020000, None, true)]
+    #[case::peer_already_on_vfio(0x020000, Some("vfio-pci"), true)]
+    #[case::peer_parked_on_pci_stub(0x020000, Some("pci-stub"), true)]
+    #[case::root_port_on_pcieport(0x060400, Some("pcieport"), true)]
+    #[case::host_bridge(0x060000, Some("pcieport"), true)]
+    #[case::audio_companion_on_a_host_driver(0x040300, Some("snd_hda_intel"), false)]
+    fn a_group_shared_with_a_host_held_function_is_refused(
+        sysfs: Fake,
+        #[case] peer_class: u32,
+        #[case] peer_driver: Option<&str>,
+        #[case] accepted: bool,
+    ) {
+        let gpu = node(&sysfs, &[H100])[0].address.clone();
+        let peer = "0000:00:00.1";
+        sysfs.add_pci_device(peer, 0x15b3, 0x1021, peer_class, peer_driver);
+        sysfs.set_iommu_group(&gpu, 7);
+        sysfs.set_iommu_group(peer, 7);
+        let states = in_scope(&sysfs.sysfs).unwrap().devices;
+        assert_eq!(
+            states.len(),
+            1,
+            "the NIC is out of scope, the GPU is the run"
+        );
+
+        assert_eq!(
+            verify_groups(&sysfs.sysfs, &states, Destination::Host).is_ok(),
+            accepted
+        );
     }
 
     /// The kernel names the variant module with underscores and sysfs names

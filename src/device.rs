@@ -96,7 +96,8 @@ pub struct DeviceState {
     /// it against the 8-bit base class and always misses.
     pub class: u32,
     pub driver: Option<String>,
-    pub iommu_group: i64,
+    /// `None` means no IOMMU group, which vfio cannot bind.
+    pub iommu_group: Option<u32>,
     pub numa_node: i64,
     /// `None` means out of scope.
     pub row: Option<&'static DeviceRow>,
@@ -207,7 +208,7 @@ pub fn discover(sysfs: &Sysfs) -> Result<Node> {
                 device_name: dev.device_name,
                 class: dev.class,
                 driver: (!dev.driver.is_empty()).then_some(dev.driver),
-                iommu_group: dev.iommu_group,
+                iommu_group: u32::try_from(dev.iommu_group).ok(),
                 numa_node: dev.numa_node,
                 row,
                 cc_chip: match row.map(|row| row.provisioning) {

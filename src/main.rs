@@ -154,7 +154,9 @@ fn status(probe: bool, all: bool, sysfs: &Sysfs) -> Result<()> {
             class = state.class,
             chip = state.cc_chip.unwrap_or("-"),
             driver = state.driver.as_deref().unwrap_or("<unbound>"),
-            group = state.iommu_group,
+            group = state
+                .iommu_group
+                .map_or("-".to_string(), |group| group.to_string()),
             numa = state.numa_node,
             name = state.device_name,
         );
@@ -189,6 +191,7 @@ fn apply(mode: Mode, bind_fabric: bool, roots: &Roots) -> Result<()> {
     verify_capable(&node.devices, mode)?;
     let fabric = Destination::of(mode, bind_fabric);
     fabric::verify(&node, fabric)?;
+    drivers::verify_groups(&sysfs, &node.devices, fabric)?;
 
     // Re-read in `nvidia::apply`: hardware may change after this safety check.
     let unreadable = nvidia::probe_modes(&mut node.devices);

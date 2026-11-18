@@ -125,6 +125,17 @@ catalog does not know, since neither can prove generic `vfio-pci` safe. A
 target another driver holds, a management PF still on `mlx5_core` say, is
 refused before any GPU mode changes, naming the holder.
 
+Every target must sit in an IOMMU group, and in one VFIO can hand to a VM. A
+group holding devices that go to different VMs, two GPUs or a GPU beside a
+fabric function, is refused, since VFIO gives a group to one VM at a time; so
+is a group where a function outside the run stays on a host driver, since VFIO
+would refuse the group. The fabric's functions may share a group, under PPCIE
+the whole board may, and the bridges every GPU sits behind never count, since
+the port driver leaves DMA ownership alone. All of it is checked before a GPU
+mode changes. Whether a GPU shares its group with the data-path ConnectX PFs
+behind the same PCIe switch depends on the kernel; where it does, those PFs
+must leave `mlx5_core` before the GPUs can be provisioned.
+
 ## Deploying it
 
 Cluster-wide fan-out is one privileged, token-free Job per node via
