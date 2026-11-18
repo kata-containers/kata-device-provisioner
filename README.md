@@ -57,10 +57,14 @@ via [`pcilibs-rs`](https://github.com/kata-containers/pcilibs-rs) — the same
 crate the device plugin uses to classify what it advertises.
 
 Which devices are in scope is one compile-time table keyed on PCI identity, so
-supporting another accelerator is one row. There is no vendor abstraction on
-purpose: TDISP devices (AMD SEV-TIO, Intel TDX Connect) are attested and locked
-to a VM at bind time by the platform, so they need no node-level mode at all —
-see [ARCHITECTURE.md](ARCHITECTURE.md).
+supporting another accelerator is one row. The management ConnectX PFs of an
+HGX Bx00 or Rx00 baseboard are the one row identity alone cannot admit: the
+node's data-path NICs share it, so the row takes only the functions pcilibs-rs
+names as the fabric by their VPD role, and an ordinary NIC is never touched.
+Reading VPD may need root, so `status` may too, even without `--probe`. There
+is no vendor abstraction on purpose: TDISP devices (AMD SEV-TIO, Intel TDX
+Connect) are attested and locked to a VM at bind time by the platform, so they
+need no node-level mode at all — see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## What it does not do
 

@@ -19,7 +19,8 @@ job, which means the per-node Job carries no ServiceAccount token.
 src/
   main.rs    CLI (status / apply / uninstall) and stage order
   device.rs  vendor-neutral discovery + the DEVICES table (PCI identity ->
-             provisioning kind + label scheme) -> one DeviceState per device
+             provisioning kind + label scheme) -> one DeviceState per device,
+             plus the NVSwitch fabric pcilibs-rs names on the node
   host.rs    host-check: can this node do passthrough at all
   idle.rs    who has the device open, via /proc and /dev/vfio
   modules.rs loading a module with the host's modprobe, and the boot
