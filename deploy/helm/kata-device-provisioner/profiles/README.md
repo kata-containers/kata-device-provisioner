@@ -26,6 +26,7 @@ CI does the same on every pull request and fails if the index is out of date.
 | [`HGX-Hx00-PPCIE`](HGX-Hx00-PPCIE.values.yaml) | HGX Hx00 | `ppcie`, whole board |
 | [`HGX-Bx00`](HGX-Bx00.values.yaml) | HGX Bx00 (B200, B300) | `off` |
 | [`HGX-Bx00-CC`](HGX-Bx00-CC.values.yaml) | HGX Bx00 | `on` — single-GPU and multi-GPU |
+| [`HGX-Rx00`](HGX-Rx00.values.yaml) | HGX Rx00 (Rubin SXM, coherent variants included) | `off` |
 | [`PCIE-GPU`](PCIE-GPU.values.yaml) | discrete cards, no NVSwitch | `off` |
 | [`PCIE-GPU-CC`](PCIE-GPU-CC.values.yaml) | discrete cards, no NVSwitch | `on`, per GPU |
 | [`GBx00`](GBx00.values.yaml) | Grace-Blackwell superchips (GB200, GB300) | `off` |
@@ -33,17 +34,37 @@ CI does the same on every pull request and fails if the index is out of date.
 
 Profiles are per chip generation, not per SKU: `HGX-Hx00` matches any GH100
 board (an H100, H200, H800 or H20 baseboard looks the same from PCI config
-space) and `HGX-Bx00` matches any GB100/GB110 board (B200 or B300), so one
-release covers a fleet mixing them without a profile per part number. The
-baseboard is the same regardless of which OEM (Supermicro, Lenovo, ...)
-builds it, so nothing here selects on that either.
+space), `HGX-Bx00` any GB100/GB110 SXM board (B200 or B300) and `HGX-Rx00` any
+Rubin SXM board, so one release covers a fleet mixing them without a profile
+per part number. The baseboard is the same regardless of which OEM (Supermicro,
+Lenovo, ...) builds it, so nothing here selects on that either, and nothing
+selects on CPU type.
 
-GH200 and GB200/GB300 fall inside those same chip families but are explicitly
-excluded from both, because a Grace superchip is a different machine from an
-HGX baseboard: its GPUs are coherently attached and CC needs support from the
-CPU as well, which Grace has not got. GB200/GB300 have [`GBx00`](GBx00.values.yaml)
-instead, which binds for passthrough and leaves CC off. GH200 has no profile
-yet.
+What makes a node an HGX board is its fabric. Hx00 shows the NVSwitches as PCI
+functions, so those profiles select on `nvidia-nvswitch`. Bx00 and Rx00 reach
+the switches through the management ConnectX PFs, which NFD cannot tell from
+the data-path NICs beside them, so those profiles select on
+`nvidia-managed-fabric-candidate`, a GPU of the family beside an InfiniBand
+ConnectX function, and the Job qualifies the PFs by VPD role on the node: an
+SXM board whose ConnectX functions turn out to be ordinary NICs is selected and
+then refused, never bound. Every HGX profile sets `bindFabric: true`, which
+binds the whole fabric for a ServiceVM alongside the GPUs, in CC mode or not;
+the mechanism is in the [README](../../../../README.md).
+
+GH200 and GB200/GB300 fall inside the Hopper and Blackwell chip families but
+are excluded from the HGX profiles: a Grace superchip is a different machine,
+its GPUs coherently attached, and CC needs support from the CPU as well, which
+Grace has not got. GB200/GB300 have [`GBx00`](GBx00.values.yaml) instead, which
+binds for passthrough and leaves CC off. GH200 has no profile yet. Coherent
+Rubin, by contrast, stays in `HGX-Rx00`: on Rubin, attachment does not decide
+whether CC can be enabled.
+
+`HGX-Rx00` was validated on a DGX Rubin NVL8 (2026-11-18), from NFD's
+selection through the per-node Job to the published fabric fact; a cold boot
+and a ServiceVM bringing the fabric up remain to be validated. On that node
+each GPU shares its IOMMU group with the two data-path ConnectX PFs behind the
+same switch, which must leave `mlx5_core` before the Job will provision the
+GPUs.
 
 ```sh
 helm install kata-device-provisioner deploy/helm/kata-device-provisioner \
@@ -61,9 +82,10 @@ A cluster holding more than one kind of GPU node takes one release with a
 profile enabled per hardware class, each its own run with its own selection,
 mode and pacing. [`MIXED-FLEET`](MIXED-FLEET.values.yaml) is that file with
 every block commented out: uncomment the classes the fleet has, at most one
-mode per class. Their selections cannot collide — the HGX profiles require an
-NVSwitch, the discrete-card ones refuse a node that has one, and both exclude
-Grace superchips by device id — so the runs never contend for a node.
+mode per class. Their selections cannot collide — the HGX profiles require a
+fabric, direct switches or a managed-fabric candidate, the discrete-card ones
+refuse both, and both exclude Grace superchips by device id — so the runs never
+contend for a node.
 
 ## The modes, and NVIDIA's
 
