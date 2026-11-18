@@ -9,6 +9,7 @@ mod host;
 mod idle;
 mod mode;
 mod modules;
+mod nfd;
 mod nvidia;
 
 use std::collections::HashMap;
@@ -89,7 +90,8 @@ enum Command {
         roots: Roots,
     },
 
-    /// Remove the boot configuration, leaving live devices unchanged.
+    /// Remove the boot configuration and the NFD fact, leaving live devices
+    /// unchanged.
     Uninstall {
         #[command(flatten)]
         roots: Roots,
@@ -175,6 +177,20 @@ fn status(probe: bool, all: bool, sysfs: &Sysfs) -> Result<()> {
 }
 
 fn apply(mode: Mode, bind_fabric: bool, roots: &Roots) -> Result<()> {
+    let outcome = provision(mode, bind_fabric, roots);
+    if outcome.is_err() {
+        // A failed run must not leave an earlier positive fact behind.
+        if let Err(err) = nfd::remove(&roots.host_root) {
+            eprintln!("{err:#}");
+        }
+    }
+    outcome
+}
+
+/// The fabric fact is withdrawn before the first device write and kept through
+/// a converged run: NFD would otherwise drop the label for the length of a
+/// no-op, and a ServiceVM scheduled on it would be evicted for nothing.
+fn provision(mode: Mode, bind_fabric: bool, roots: &Roots) -> Result<()> {
     let sysfs = roots.sysfs();
 
     host::check(&sysfs)?;
@@ -197,11 +213,11 @@ fn apply(mode: Mode, bind_fabric: bool, roots: &Roots) -> Result<()> {
 
     // Re-read in `nvidia::apply`: hardware may change after this safety check.
     let unreadable = nvidia::probe_modes(states);
-    verify_idle(
-        roots,
-        &sysfs,
-        &writable(&sysfs, states, &passthrough, &drivers, mode, &unreadable),
-    )?;
+    let changing = writable(&sysfs, states, &passthrough, &drivers, mode, &unreadable);
+    verify_idle(roots, &sysfs, &changing)?;
+    if !changing.is_empty() {
+        nfd::remove(&roots.host_root)?;
+    }
 
     mode_stage(states, mode)?;
 
@@ -218,7 +234,7 @@ fn apply(mode: Mode, bind_fabric: bool, roots: &Roots) -> Result<()> {
 
     release(&sysfs, states, &passthrough)?;
 
-    verify(&sysfs, mode, &passthrough, &drivers)?;
+    verify_and_publish(roots, mode, &passthrough, &drivers)?;
 
     println!(
         "node provisioned: mode={mode}, {} devices",
@@ -397,6 +413,23 @@ fn verify(
     Ok(())
 }
 
+fn verify_and_publish(
+    roots: &Roots,
+    mode: Mode,
+    states: &[DeviceState],
+    drivers: &HashMap<String, VfioDriver>,
+) -> Result<()> {
+    verify(&roots.sysfs(), mode, states, drivers)?;
+    nfd::publish(&roots.host_root, service_vm_fabric(mode, states))
+}
+
+/// Whether the node's fabric is for a Service VM. Under PPCIE the switches
+/// belong to the one confidential VM that takes the whole board, so the
+/// Service VM selection hint would only draw a DaemonSet that steals them.
+fn service_vm_fabric(mode: Mode, states: &[DeviceState]) -> bool {
+    mode != Mode::Ppcie && states.iter().any(DeviceState::is_fabric)
+}
+
 /// Busy devices block only runs that would change them, so converged nodes can
 /// be upgraded while Kata workloads are running.
 fn writable(
@@ -447,9 +480,10 @@ fn verify_idle(roots: &Roots, sysfs: &Sysfs, states: &[DeviceState]) -> Result<(
 }
 
 fn uninstall(roots: &Roots) -> Result<()> {
+    nfd::remove(&roots.host_root)?;
     modules::unpersist(&roots.host_root)?;
 
-    println!("boot configuration removed; live bindings and CC mode left unchanged");
+    println!("boot configuration and NFD facts removed; live bindings and CC mode left unchanged");
     Ok(())
 }
 
@@ -521,7 +555,7 @@ mod tests {
     }
 
     #[rstest]
-    fn uninstall_removes_only_boot_configuration(sysfs: Fake) {
+    fn uninstall_removes_boot_configuration_and_facts(sysfs: Fake) {
         let address = "0000:65:00.0";
         sysfs.add_driver("vfio-pci");
         sysfs.add_pci_device(address, 0x10de, H100.0, H100.1, Some("vfio-pci"));
@@ -542,6 +576,7 @@ mod tests {
         )
         .unwrap();
 
+        nfd::publish(host.path(), true).unwrap();
         uninstall(&Roots {
             sysfs: sysfs.root().to_path_buf(),
             proc: proc_root.path().to_path_buf(),
@@ -551,6 +586,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(sysfs.driver_unbind("vfio-pci"), "");
+        assert!(!host.path().join(nfd::FILE).exists());
         assert!(!host
             .path()
             .join("etc/modprobe.d/kata-device-provisioner.conf")
@@ -819,6 +855,80 @@ mod tests {
         }
         assert!(vfio::current_driver(&fake.sysfs, "0000:06:00.0").is_none());
         assert!(vfio::current_driver(&fake.sysfs, "0000:05:00.2").is_none());
+    }
+
+    #[fixture]
+    fn empty_roots(sysfs: Fake) -> (Fake, TempDir, Roots) {
+        let host = tempfile::tempdir().unwrap();
+        let roots = Roots {
+            sysfs: sysfs.root().to_path_buf(),
+            proc: host.path().join("proc"),
+            dev_vfio: host.path().join("dev/vfio"),
+            host_root: host.path().to_path_buf(),
+        };
+        (sysfs, host, roots)
+    }
+
+    #[rstest]
+    fn failed_preflight_removes_a_previous_positive_fact(empty_roots: (Fake, TempDir, Roots)) {
+        let (_sysfs, host, roots) = empty_roots;
+        nfd::publish(host.path(), true).unwrap();
+        assert!(apply(Mode::Off, true, &roots).is_err());
+        assert!(!host.path().join(nfd::FILE).exists());
+    }
+
+    #[rstest]
+    #[case::all_management_pfs_bound(true)]
+    #[case::one_management_pf_unbound(false)]
+    fn nfd_publication_requires_verified_bindings(
+        managed_fabric_node: Fake,
+        #[case] all_bound: bool,
+    ) {
+        let fake = managed_fabric_node;
+        let states = in_scope(&fake.sysfs).unwrap().devices;
+        let host = tempfile::tempdir().unwrap();
+        let roots = Roots {
+            sysfs: fake.root().to_path_buf(),
+            proc: host.path().join("proc"),
+            dev_vfio: host.path().join("dev/vfio"),
+            host_root: host.path().to_path_buf(),
+        };
+        fake.add_driver("vfio-pci");
+        for state in states.iter().take(if all_bound { states.len() } else { 1 }) {
+            fake.add_device(&state.address, Some("vfio-pci"));
+        }
+        let drivers = states
+            .iter()
+            .map(|s| (s.address.clone(), vfio_pci()))
+            .collect();
+        assert_eq!(
+            verify_and_publish(&roots, Mode::Off, &states, &drivers).is_ok(),
+            all_bound
+        );
+        assert_eq!(host.path().join(nfd::FILE).exists(), all_bound);
+    }
+
+    #[rstest]
+    #[case::off(Mode::Off, true)]
+    #[case::on(Mode::On, true)]
+    #[case::ppcie(Mode::Ppcie, false)]
+    fn ppcie_keeps_the_fabric_from_service_vms(
+        managed_fabric_node: Fake,
+        #[case] mode: Mode,
+        #[case] hinted: bool,
+    ) {
+        let states = in_scope(&managed_fabric_node.sysfs).unwrap().devices;
+        assert!(states.iter().any(DeviceState::is_fabric));
+        assert_eq!(service_vm_fabric(mode, &states), hinted);
+    }
+
+    #[rstest]
+    fn an_ordinary_nic_cannot_produce_a_fabric_fact(sysfs: Fake) {
+        sysfs.add_pci_device("0000:06:00.0", 0x15b3, 0x1021, 0x020700, None);
+        let states = in_scope(&sysfs.sysfs).unwrap().devices;
+        let host = tempfile::tempdir().unwrap();
+        nfd::publish(host.path(), states.iter().any(DeviceState::is_fabric)).unwrap();
+        assert!(!host.path().join(nfd::FILE).exists());
     }
 
     /// Turning CC off is still allowed there: it is only a raised mode that
