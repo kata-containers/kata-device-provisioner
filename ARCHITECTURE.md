@@ -59,11 +59,20 @@ boundary in the middle of the set-and-reset pair, which has to be atomic.
 | `bind` | `driver_override` + probe, so the node is usable now without waiting for one |
 | `verify` | Re-read the mode and the binding from the hardware; the run fails loudly if it disagrees |
 
-The label that follows a successful run is written by the dispatcher, not by
-this component — see below.
+The completion label that follows a successful run is written by the
+dispatcher, not by this component — see below. The one fact this component
+publishes itself is the fabric: after `verify`, a run that bound it hands
+`kata.feature.node.kubernetes.io/managed-fabric=true` to NFD through its
+`local` source, as a file, so VPD access stays in the short-lived, token-free
+Job and NFD keeps its non-root worker and read-only mount. The fact is
+withdrawn before the first device write and on any failure, so no earlier
+positive result outlives a failed run, and left alone through a converged run,
+so NFD never drops the label for a no-op. It is a selection hint for a Service
+VM DaemonSet; the kubelet's allocatable is the live fact, and the dispatcher's
+admission gate stays what it was.
 
-Uninstall removes only the boot configuration. Live bindings and CC mode are
-deliberately left alone — see the decisions below.
+Uninstall removes the boot configuration and that fact. Live bindings and CC
+mode are deliberately left alone — see the decisions below.
 
 ### Ordering
 
@@ -338,18 +347,22 @@ NVIDIA-shaped and populated only through the `NvidiaInBandCc` arm. Generalising
 them now would mean guessing at the shape of an implementation that, on current
 evidence, will not exist.
 
-### Grace superchips are a verify-only platform
+### Coherent attachment and CC capability are separate
 
-On C2C parts (GH200, GB200) confidential computing takes more than the GPU: the
+On GH200, GB200 and GB300 confidential computing takes more than the GPU: the
 CPU has to support it too, and Grace does not. `pcilibs_rs::cc` refuses to
-enable CC on those ids, matching `gpu-admin-tools`, so this component never
-*sets* a mode there — there is no mode on that node to set. The provisioner
-still discovers, verifies, binds and labels, and refuses the node outright if
-the release asks for anything but `off`.
+enable CC on those chips, matching `gpu-admin-tools`, so this component never
+*sets* a mode there and refuses the node outright if the release asks for
+anything but `off`. It still discovers, verifies, binds and labels, and must be
+honest that its CC stage is a no-op there rather than appear to succeed; GB200
+NVL72 is a primary target of the device plugin.
 
-This matters because GB200 NVL72 is a primary target of the device plugin.
-The provisioner must be honest that its CC stage is a no-op there rather than
-silently appearing to succeed.
+Coherent Rubin is different. The catalog says per chip whether a coherent
+variant may raise CC (`c2c_cc_supported`), and for Rubin it may, so the
+refusal keys on that and not on attachment. Attachment still decides the
+driver: a coherently attached GPU needs the variant that maps its memory, and
+`is_c2c` is what the binding side keeps using. Neither decision is inferred
+from the host CPU model.
 
 ### All GPUs on a node share one mode
 
@@ -419,9 +432,25 @@ binary installed on the host and nothing for an operator to debug when it works.
 
 This is only sound because the NVIDIA host driver is absent, which `host-check`
 enforces: `ids=` claims a device that nothing else wanted, rather than racing a
-driver that already has it. On a node with `nvidia.ko` installed this mechanism
-would lose the race, and so would every other mechanism short of the kernel
-command line.
+driver that already has it. On a node with `nvidia.ko` installed the host
+driver, autoloaded for the GPU's PCI identity, binds the GPU before `vfio-pci`
+loads, and any `nvidia-smi` on the host, a monitoring probe included, loads it
+again (seen on DGX OS nodes, 2026-11-02 and 2026-11-18); taking a GPU back
+would need the bind-event rule the management PFs have, or the kernel command
+line.
+
+The management ConnectX PFs of a Bx00 or Rx00 board cannot use `ids=` at all:
+the node's data-path NICs share their vendor and device id, and `ids=` would
+hand every one of them to `vfio-pci`. Their claim is therefore scoped by
+address as well, as a udev rule keyed on `KERNEL` and the ids, for a generic
+and a variant driver alike. The host driver may have bound the function before
+udev ran the rule, or probe it between the rule's `DRIVER` check and the
+override write, so the rule comes in two lines: a detach rule matching the
+`add` and `bind` events, never our own driver so the takeover cannot loop, that
+writes the override, unbinds the holder and probes; and the plain `add` rule
+for a function nothing claimed. An address rule follows nothing to a new slot:
+reprovision after a PCI address change, since validating the VPD role from udev
+would put a shell helper and a VPD read on every boot.
 
 It also means the node needs no help from the cluster to come back, which is the
 invariant the whole persistence question exists to serve. A rebooted node keeps
@@ -507,11 +536,44 @@ have non-coherent subsystem variants. The consequence is a refusal on parts that
 would have been fine, chosen over silently mis-binding a coherent one.
 
 The alias table cannot tell "no variant driver exists" from "this kernel has not
-heard of it", but `pcilibs_rs::cc` can, because it already carries the C2C device ids to
-decide where no CC mode can be raised at all — the same set, since C2C is
-what makes the variant driver necessary. So a coherently attached GPU that
-resolves to plain `vfio-pci` is refused with the kernel named as the problem,
-and every other device keeps the fallback.
+heard of it": `vfio_pci` registers only a catch-all alias, so on every kernel
+the table is silent on an H100, a B200, an NVSwitch and a ConnectX PF, and
+silence has to mean generic `vfio-pci` for those or no HGX node could be
+provisioned at all. What decides is the catalog, which already carries the C2C
+device ids to say where no CC mode can be raised: a CC GPU it knows as
+noncoherent, an NVSwitch and a management PF take the fallback, while a
+coherent GPU, or a GPU the catalog does not know, cannot prove the fallback
+safe and is refused with the kernel named as the problem. A table that cannot
+be read at all stays an error, which a bare NotFound would have hidden.
+
+A target another driver holds is refused at the same point, before the mode
+stage. `vfio::bind` would refuse to steal it anyway, but at bind time, after
+the GPU modes have changed; on a DGX Rubin NVL8 the fabric manager's four
+management PFs were exactly that target.
+
+### Fabric management belongs to the ServiceVM
+
+`--bind-fabric` passes the fabric through independently of the GPU mode. The
+fabric is what pcilibs-rs names on the node through `Topology::fabric()`: the
+NVSwitch chips on Hx00, the management ConnectX PFs on Bx00 and Rx00, qualified
+by the VPD role the HGX guide documents or by sitting beside a marked sibling
+PF. VFs and ordinary NICs are never named, so a candidate node label cannot
+bypass the scan, and the scan runs only on a node with a fabric candidate.
+
+kata-device-plugin advertises that fabric as one `nvidia.com/nvswitch-fabric`
+device, and only once every function the scan names is bound; a Service VM
+requests `nvidia.com/nvswitch-fabric: 1` on every platform. The provisioner
+therefore binds the fabric whole or not at all: a run that would leave any of
+its functions on the host is refused before a GPU is touched, and a fabric
+nobody asked for stays on the host whole. PPCIE is unchanged: the switch chips
+go to the one confidential VM that takes the board, and a board whose fabric
+is reached through management PFs cannot take PPCIE at all.
+
+Validated on a DGX Rubin NVL8 (2026-11-18): the scan named the four marked
+ConnectX-9 PFs and none of the sixteen data-path PFs beside the GPUs, `apply`
+bound the eight GPUs and the fabric with CC off, a second run changed nothing,
+and the same run succeeded as the chart's per-node Job. A cold boot and a
+Service VM bringing the fabric up remain to be validated there.
 
 #### What was rejected
 
