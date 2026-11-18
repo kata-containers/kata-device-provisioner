@@ -29,6 +29,7 @@ src/
   modules.rs loading a module with the host's modprobe, and the boot
              configuration that makes the node redo the binding at boot
   mode.rs    the node-level Mode enum (off | on | devtools | ppcie)
+  nfd.rs     the verified fabric fact handed to NFD through its local source
   nvidia.rs  NVIDIA in-band CC mode, reached only via Provisioning::NvidiaInBandCc
 ```
 

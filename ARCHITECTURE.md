@@ -60,11 +60,22 @@ boundary in the middle of the set-and-reset pair, which has to be atomic.
 | `bind` | `driver_override` + probe, so the node is usable now without waiting for one |
 | `verify` | Re-read the mode and the binding from the hardware; the run fails loudly if it disagrees |
 
-The label that follows a successful run is written by the dispatcher, not by
-this component — see below.
+The completion label that follows a successful run is written by the
+dispatcher, not by this component — see below. The one fact this component
+publishes itself is the fabric: after `verify`, a run that bound it hands
+`kata.feature.node.kubernetes.io/managed-fabric=true` to NFD through its
+`local` source, as a file, so VPD access stays in the short-lived, token-free
+Job and NFD keeps its non-root worker and read-only mount. The fact is
+withdrawn before the first device write and on any failure, so no earlier
+positive result outlives a failed run, and left alone through a converged run,
+so NFD never drops the label for a no-op. Under PPCIE nothing is published:
+the switches go to the one confidential VM that takes the board, and the label
+would schedule a Service VM DaemonSet pod on a node with no fabric left for
+it. The label is a selection hint for that DaemonSet; the kubelet's allocatable
+is the live fact, and the dispatcher's admission gate stays what it was.
 
-Uninstall removes only the boot configuration. Live bindings and CC mode are
-deliberately left alone — see the decisions below.
+Uninstall removes the boot configuration and that fact. Live bindings and CC
+mode are deliberately left alone — see the decisions below.
 
 ### Ordering
 

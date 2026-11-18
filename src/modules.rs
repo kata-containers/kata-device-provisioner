@@ -227,7 +227,7 @@ pub fn unpersist(host_root: &Path) -> Result<()> {
     Ok(())
 }
 
-fn remove(path: &Path) -> Result<()> {
+pub(crate) fn remove(path: &Path) -> Result<()> {
     match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
