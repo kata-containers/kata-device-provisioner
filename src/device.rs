@@ -446,6 +446,7 @@ pub(crate) mod tests {
     pub(crate) const A100: (u16, u32) = (0x20b0, 0x030200);
     pub(crate) const NVSWITCH: (u16, u32) = (0x22a3, 0x068000);
     pub(crate) const GH200: (u16, u32) = (0x2342, 0x030200);
+    pub(crate) const RUBIN_C2C: (u16, u32) = (0x3041, 0x030200);
     pub(crate) const GB200: (u16, u32) = (0x2941, 0x030200);
     pub(crate) const GB202: (u16, u32) = (0x2bb5, 0x030200);
 

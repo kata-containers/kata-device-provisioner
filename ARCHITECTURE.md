@@ -338,18 +338,22 @@ NVIDIA-shaped and populated only through the `NvidiaInBandCc` arm. Generalising
 them now would mean guessing at the shape of an implementation that, on current
 evidence, will not exist.
 
-### Grace superchips are a verify-only platform
+### Coherent attachment and CC capability are separate
 
-On C2C parts (GH200, GB200) confidential computing takes more than the GPU: the
+On GH200, GB200 and GB300 confidential computing takes more than the GPU: the
 CPU has to support it too, and Grace does not. `pcilibs_rs::cc` refuses to
-enable CC on those ids, matching `gpu-admin-tools`, so this component never
-*sets* a mode there — there is no mode on that node to set. The provisioner
-still discovers, verifies, binds and labels, and refuses the node outright if
-the release asks for anything but `off`.
+enable CC on those chips, matching `gpu-admin-tools`, so this component never
+*sets* a mode there and refuses the node outright if the release asks for
+anything but `off`. It still discovers, verifies, binds and labels, and must be
+honest that its CC stage is a no-op there rather than appear to succeed; GB200
+NVL72 is a primary target of the device plugin.
 
-This matters because GB200 NVL72 is a primary target of the device plugin.
-The provisioner must be honest that its CC stage is a no-op there rather than
-silently appearing to succeed.
+Coherent Rubin is different. The catalog says per chip whether a coherent
+variant may raise CC (`c2c_cc_supported`), and for Rubin it may, so the
+refusal keys on that and not on attachment. Attachment still decides the
+driver: a coherently attached GPU needs the variant that maps its memory, and
+`is_c2c` is what the binding side keeps using. Neither decision is inferred
+from the host CPU model.
 
 ### All GPUs on a node share one mode
 
