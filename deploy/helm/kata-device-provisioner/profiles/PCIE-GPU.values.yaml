@@ -25,6 +25,7 @@ profiles:
     # say it: without these, HGX baseboards and Grace superchips match here too.
     nodeSelectorExpressions:
       - "!kata.feature.node.kubernetes.io/nvidia-nvswitch"
+      - "!kata.feature.node.kubernetes.io/nvidia-managed-fabric-candidate"
       - "!kata.feature.node.kubernetes.io/nvidia-c2c"
 
     job:
