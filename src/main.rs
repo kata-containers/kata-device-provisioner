@@ -10,6 +10,8 @@ mod idle;
 mod mode;
 mod modules;
 mod nfd;
+#[cfg(test)]
+mod node_feature_rule;
 mod nvidia;
 
 use std::collections::HashMap;

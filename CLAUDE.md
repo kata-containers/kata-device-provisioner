@@ -30,6 +30,8 @@ src/
              configuration that makes the node redo the binding at boot
   mode.rs    the node-level Mode enum (off | on | devtools | ppcie)
   nfd.rs     the verified fabric fact handed to NFD through its local source
+  node_feature_rule.rs test-only: renders the chart's NodeFeatureRule from
+             DEVICES and the pcilibs-rs catalog; fails while the template is stale
   nvidia.rs  NVIDIA in-band CC mode, reached only via Provisioning::NvidiaInBandCc
 ```
 
