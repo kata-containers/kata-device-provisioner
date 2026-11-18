@@ -20,8 +20,9 @@ privileged DaemonSet.
 ## What it does
 
 ```text
-host-check -> discover -> verify idle -> resolve vfio drivers
-           -> set CC mode -> reset -> write boot config -> bind -> verify
+host-check -> discover -> resolve vfio drivers -> verify idle
+           -> load vfio modules -> set CC mode -> reset
+           -> write boot config -> bind -> verify
 ```
 
 Each stage is idempotent and the whole run converges: a node already in the
@@ -106,7 +107,14 @@ instead of a node.
 
 The node needs an IOMMU enabled on the kernel command line and `kmod`
 installed; `vfio-pci` is loaded for you on the first run, using the host's own
-`modprobe`.
+`modprobe`. Which module a device takes is the kernel's call, read from its
+alias table. Where the table is silent, the CC GPUs the catalog knows as
+noncoherent, the NVSwitches and the management ConnectX PFs take plain
+`vfio-pci`, which is right for them; a coherently attached GPU with no
+`nvgrace_gpu_vfio_pci` to claim it is refused instead, and so is a GPU the
+catalog does not know, since neither can prove generic `vfio-pci` safe. A
+target another driver holds, a management PF still on `mlx5_core` say, is
+refused before any GPU mode changes, naming the holder.
 
 ## Deploying it
 

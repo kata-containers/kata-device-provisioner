@@ -36,24 +36,6 @@ pub fn modules_alias(host_root: &Path, proc: &Path) -> Result<PathBuf> {
         .join("modules.alias"))
 }
 
-pub fn vfio_module(
-    aliases: &Path,
-    vendor: u16,
-    device: u16,
-    allow_generic: bool,
-) -> Result<String> {
-    // Only a variant driver has a device-specific alias; `vfio_pci` registers
-    // a catch-all, so the table is silent on every other device.
-    match pcilibs_rs::vfio::module_for(aliases, vendor, device)? {
-        Some(module) => Ok(module),
-        None if allow_generic => Ok("vfio_pci".to_string()),
-        None => bail!(
-            "no vfio variant driver claims {vendor:04x}:{device:04x}, and generic vfio-pci is \
-             not known to be safe for it"
-        ),
-    }
-}
-
 pub fn modprobe(host_root: &Path, module: &str) -> Result<()> {
     let modprobe = find_modprobe(host_root)?;
 

@@ -39,8 +39,8 @@ machinery.
 One per-node Job running `apply` once:
 
 ```text
-host-check -> discover -> verify-idle -> resolve-drivers
-           -> cc-mode -> reset -> persist -> bind -> verify
+host-check -> discover -> resolve-drivers -> verify-idle
+           -> load-modules -> cc-mode -> reset -> persist -> bind -> verify
 ```
 
 The stages are functions in one process, not ordered `initContainers`. Splitting
@@ -51,8 +51,9 @@ boundary in the middle of the set-and-reset pair, which has to be atomic.
 | --- | --- |
 | `host-check` | Refuse a node that cannot do passthrough at all: no IOMMU groups in sysfs, or an NVIDIA host driver holding a GPU. Neither is fixable from a pod without a reboot, so they fail early and loudly. It says nothing about vfio drivers, since which one a device needs is `resolve-drivers`' answer |
 | `discover` | Enumerate devices from sysfs, classify against the `DEVICES` table (`pcilibs-rs`), read current driver and CC mode |
+| `resolve-drivers` | Per device, read its vfio module out of the running kernel's `modules.alias`. Before anything is mutated: a node whose kernel has no driver for one of its GPUs must be refused before a GPU is reset, not after. A target another driver holds is refused here too |
 | `verify-idle` | Refuse to touch a device anything holds open, found by scanning `/proc/*/fd` for the device's `/dev/vfio` group node or cdev. Every device is checked before any device is touched, so a busy node is refused whole rather than half-transitioned |
-| `resolve-drivers` | Per device, read its vfio module out of the running kernel's `modules.alias`, load it, and resolve the driver name it registers. Before anything is mutated: a node whose kernel has no driver for one of its GPUs must be refused before a GPU is reset, not after |
+| `load-modules` | Load each vfio module and read the driver name it registers. After `verify-idle`, because `vfio-pci` binds the ids a saved `ids=` option names as it loads, which makes this the first write to the node |
 | `cc-mode` | Persist the desired CC mode in the GPU's EEPROM (`pcilibs_rs::cc`) |
 | `reset` | Function-level reset; the new mode only takes effect after it |
 | `persist` | Write the node's `modules-load.d` and `modprobe.d` configuration, plus a `udev` rule for anything that binds only through `driver_override`, so the binding survives a reboot |
@@ -269,7 +270,7 @@ configuration that gets the node back there by itself.
 
 A node that has never run this may not have its vfio driver registered, and
 telling the operator to load it themselves makes a first run fail for a reason
-the Job could have fixed. So `resolve-drivers` loads it — by finding the host's
+the Job could have fixed. So `load-modules` loads it — by finding the host's
 `modprobe` under `--host-root` and `chroot`ing into that root before exec'ing
 it, which is what kata-deploy's `install_stage_load_kernel_modules` does.
 
@@ -537,11 +538,20 @@ have non-coherent subsystem variants. The consequence is a refusal on parts that
 would have been fine, chosen over silently mis-binding a coherent one.
 
 The alias table cannot tell "no variant driver exists" from "this kernel has not
-heard of it", but `pcilibs_rs::cc` can, because it already carries the C2C device ids to
-decide where no CC mode can be raised at all — the same set, since C2C is
-what makes the variant driver necessary. So a coherently attached GPU that
-resolves to plain `vfio-pci` is refused with the kernel named as the problem,
-and every other device keeps the fallback.
+heard of it": `vfio_pci` registers only a catch-all alias, so on every kernel
+the table is silent on an H100, a B200, an NVSwitch and a ConnectX PF, and
+silence has to mean generic `vfio-pci` for those or no HGX node could be
+provisioned at all. What decides is the catalog, which already carries the C2C
+device ids to say where no CC mode can be raised: a CC GPU it knows as
+noncoherent, an NVSwitch and a management PF take the fallback, while a
+coherent GPU, or a GPU the catalog does not know, cannot prove the fallback
+safe and is refused with the kernel named as the problem. A table that cannot
+be read at all stays an error, which a bare NotFound would have hidden.
+
+A target another driver holds is refused at the same point, before the mode
+stage. `vfio::bind` would refuse it anyway, but at bind time, after the GPU
+modes have changed. The management PFs a host fabric manager still holds are
+such a target.
 
 #### What was rejected
 

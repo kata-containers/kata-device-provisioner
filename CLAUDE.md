@@ -21,6 +21,8 @@ src/
   device.rs  vendor-neutral discovery + the DEVICES table (PCI identity ->
              provisioning kind + label scheme) -> one DeviceState per device,
              plus the NVSwitch fabric pcilibs-rs names on the node
+  drivers.rs which vfio driver claims a device, from the kernel's alias table,
+             and whether it can be claimed now
   host.rs    host-check: can this node do passthrough at all
   idle.rs    who has the device open, via /proc and /dev/vfio
   modules.rs loading a module with the host's modprobe, and the boot
