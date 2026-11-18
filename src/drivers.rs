@@ -13,6 +13,7 @@ use anyhow::{bail, Context, Result};
 use pcilibs_rs::{cc, vfio, Sysfs};
 
 use crate::device::{DeviceState, Provisioning};
+use crate::fabric::Destination;
 use crate::modules;
 
 /// A substring, since a variant driver is named after `vfio-pci`:
@@ -81,14 +82,14 @@ pub(crate) fn plan<'a>(
     host_root: &Path,
     proc: &Path,
     states: &'a [DeviceState],
-    takes: impl Fn(&DeviceState) -> bool,
+    fabric: Destination,
 ) -> Result<Vec<Planned<'a>>> {
     let alias = modules::modules_alias(host_root, proc)?;
 
     states
         .iter()
         .map(|state| {
-            let module = match takes(state) {
+            let module = match fabric.takes(state) {
                 true => Some(
                     module_for(&alias, state)
                         .with_context(|| format!("{}: find its vfio module", state.address))?,
@@ -179,15 +180,26 @@ pub(crate) mod tests {
 
     /// What `plan` returns on a node whose kernel has no variant driver,
     /// without the alias table a test does not have.
-    pub(crate) fn on_vfio_pci(
-        states: &[DeviceState],
-        takes: impl Fn(&DeviceState) -> bool,
-    ) -> Vec<Planned<'_>> {
+    pub(crate) fn on_vfio_pci(states: &[DeviceState], fabric: Destination) -> Vec<Planned<'_>> {
         states
             .iter()
             .map(|state| Planned {
                 state,
-                module: takes(state).then(|| "vfio_pci".to_string()),
+                module: fabric.takes(state).then(|| "vfio_pci".to_string()),
+            })
+            .collect()
+    }
+
+    /// What `load` returns for that plan, without the modprobe a test cannot
+    /// run.
+    pub(crate) fn loaded<'a>(planned: &[Planned<'a>]) -> Vec<Target<'a>> {
+        planned
+            .iter()
+            .filter(|device| device.module.is_some())
+            .map(|device| Target {
+                state: device.state,
+                module: "vfio_pci".to_string(),
+                driver: "vfio-pci".to_string(),
             })
             .collect()
     }
@@ -357,7 +369,7 @@ pub(crate) mod tests {
         fake.add_device("0000:05:00.0", driver);
         let states = in_scope(&fake.sysfs).unwrap().devices;
         assert_eq!(
-            verify_bindable(&fake.sysfs, &on_vfio_pci(&states, |_| true)).is_ok(),
+            verify_bindable(&fake.sysfs, &on_vfio_pci(&states, Destination::ServiceVm)).is_ok(),
             accepted
         );
         assert_eq!(fake.driver_override("0000:05:00.0").trim(), "");

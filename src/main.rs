@@ -4,6 +4,7 @@
 
 mod device;
 mod drivers;
+mod fabric;
 mod host;
 mod idle;
 mod mode;
@@ -19,6 +20,7 @@ use pcilibs_rs::cc;
 
 use crate::device::{discover, in_scope, DeviceState, Provisioning};
 use crate::drivers::{Planned, Target};
+use crate::fabric::Destination;
 use crate::idle::{DEV_VFIO, PROC};
 use crate::mode::Mode;
 use crate::nvidia::Transition;
@@ -79,6 +81,11 @@ enum Command {
         #[arg(long)]
         mode: Mode,
 
+        /// Bind the NVSwitch fabric too, for a Service VM: the switch chips
+        /// on Hx00, the management ConnectX PFs on Bx00 and Rx00.
+        #[arg(long)]
+        bind_fabric: bool,
+
         #[command(flatten)]
         roots: Roots,
     },
@@ -93,7 +100,11 @@ enum Command {
 fn main() -> Result<()> {
     match Cli::parse().command {
         Command::Status { probe, all, roots } => status(probe, all, &roots.sysfs()),
-        Command::Apply { mode, roots } => apply(mode, &roots),
+        Command::Apply {
+            mode,
+            bind_fabric,
+            roots,
+        } => apply(mode, bind_fabric, &roots),
         Command::Uninstall { roots } => uninstall(&roots),
     }
 }
@@ -164,26 +175,27 @@ fn status(probe: bool, all: bool, sysfs: &Sysfs) -> Result<()> {
     Ok(())
 }
 
-fn apply(mode: Mode, roots: &Roots) -> Result<()> {
+fn apply(mode: Mode, bind_fabric: bool, roots: &Roots) -> Result<()> {
     let sysfs = roots.sysfs();
 
     host::check(&sysfs)?;
 
-    let mut states = in_scope(&sysfs)?.devices;
-    if states.is_empty() {
+    let mut node = in_scope(&sysfs)?;
+    if node.devices.is_empty() {
         bail!("no devices in scope: this node was selected for provisioning but has none");
     }
 
     // Across every device before any is touched: refuse whole, not half.
-    verify_capable(&states, mode)?;
+    verify_capable(&node.devices, mode)?;
+    let fabric = Destination::of(mode, bind_fabric);
+    fabric::verify(&node, fabric)?;
 
     // Re-read in `nvidia::apply`: hardware may change after this safety check.
-    let unreadable = nvidia::probe_modes(&mut states);
+    let unreadable = nvidia::probe_modes(&mut node.devices);
+    let states = &node.devices;
 
     // Before any reset, so a missing driver is not found out half way through.
-    let planned = drivers::plan(&roots.host_root, &roots.proc, &states, |state| {
-        passes_through(state, mode)
-    })?;
+    let planned = drivers::plan(&roots.host_root, &roots.proc, states, fabric)?;
     drivers::verify_bindable(&sysfs, &planned)?;
 
     verify_idle(
@@ -196,7 +208,7 @@ fn apply(mode: Mode, roots: &Roots) -> Result<()> {
     // option names as it loads.
     let targets = drivers::load(&sysfs, &roots.host_root, &planned)?;
 
-    mode_stage(&states, mode)?;
+    mode_stage(states, mode)?;
 
     // Before binding, so a crash leaves a node that comes back bound.
     persist(&roots.host_root, &targets)?;
@@ -238,13 +250,6 @@ fn release(sysfs: &Sysfs, planned: &[Planned]) -> Result<()> {
     }
 
     Ok(())
-}
-
-/// Only PPCIE gives one guest the whole baseboard. In the other modes each
-/// guest gets one GPU and the fabric stays with the host, switch chips and
-/// management PFs alike.
-fn passes_through(state: &DeviceState, mode: Mode) -> bool {
-    mode == Mode::Ppcie || !state.is_fabric()
 }
 
 fn persist(host_root: &Path, targets: &[Target]) -> Result<()> {
@@ -445,7 +450,7 @@ mod tests {
     use crate::device::tests::{
         managed_fabric_node, node, A100, B200, GB200, GH200, H100, NVSWITCH, RUBIN_C2C,
     };
-    use crate::drivers::tests::on_vfio_pci;
+    use crate::drivers::tests::{loaded, on_vfio_pci};
     use pcilibs_rs::cc::{CcMode, PpcieMode};
     use pcilibs_rs::testfs::{self, Fake};
     use rstest::{fixture, rstest};
@@ -478,31 +483,6 @@ mod tests {
         }
     }
 
-    #[rstest]
-    #[case::off_leaves_the_switches_on_the_host(Mode::Off, 8)]
-    #[case::on_leaves_the_switches_on_the_host(Mode::On, 8)]
-    #[case::devtools_leaves_the_switches_on_the_host(Mode::DevTools, 8)]
-    #[case::ppcie_claims_the_whole_baseboard(Mode::Ppcie, 12)]
-    fn passes_the_switches_through_only_under_ppcie(
-        sysfs: Fake,
-        #[case] mode: Mode,
-        #[case] expected: usize,
-    ) {
-        let board = [H100; 8]
-            .into_iter()
-            .chain([NVSWITCH; 4])
-            .collect::<Vec<_>>();
-        let states = node(&sysfs, &board);
-
-        let passed = states
-            .iter()
-            .filter(|state| passes_through(state, mode))
-            .count();
-
-        assert_eq!(states.len(), 12);
-        assert_eq!(passed, expected);
-    }
-
     /// A switch on the host driver is a node never provisioned for PPCIE, so
     /// taking it would be stealing hardware this tool never claimed.
     #[rstest]
@@ -522,11 +502,8 @@ mod tests {
             sysfs.add_device(&address, Some(driver));
         }
 
-        release(
-            &sysfs.sysfs,
-            &on_vfio_pci(&states, |state| passes_through(state, mode)),
-        )
-        .unwrap();
+        let fabric = Destination::of(mode, false);
+        release(&sysfs.sysfs, &on_vfio_pci(&states, fabric)).unwrap();
 
         let unbound = sysfs.driver_unbind(bound.unwrap_or("vfio-pci")) == address;
         assert_eq!(unbound, released);
@@ -593,7 +570,7 @@ mod tests {
 
         let writable = writable(
             &sysfs.sysfs,
-            &on_vfio_pci(&states, |_| true),
+            &on_vfio_pci(&states, Destination::Host),
             Mode::On,
             &HashMap::new(),
         );
@@ -625,7 +602,7 @@ mod tests {
 
         let writable = writable(
             &sysfs.sysfs,
-            &on_vfio_pci(&states, |_| true),
+            &on_vfio_pci(&states, Destination::Host),
             Mode::On,
             &HashMap::new(),
         );
@@ -645,7 +622,7 @@ mod tests {
 
         let writable = writable(
             &sysfs.sysfs,
-            &on_vfio_pci(&states, |_| true),
+            &on_vfio_pci(&states, Destination::Host),
             Mode::On,
             &unreadable,
         );
@@ -659,7 +636,7 @@ mod tests {
         let states = node(&sysfs, &[NVSWITCH]);
         sysfs.add_device(&states[0].address, Some("vfio-pci"));
 
-        let planned = on_vfio_pci(&states, |state| passes_through(state, Mode::Off));
+        let planned = on_vfio_pci(&states, Destination::Host);
         assert!(
             planned[0].module.is_none(),
             "off leaves the switch on the host"
@@ -689,7 +666,7 @@ mod tests {
             .into_iter()
             .collect();
 
-        let planned = on_vfio_pci(&states, |state| passes_through(state, Mode::Off));
+        let planned = on_vfio_pci(&states, Destination::Host);
         let writable = writable(&sysfs.sysfs, &planned, Mode::Off, &unreadable);
 
         assert_eq!(!writable.is_empty(), writes);
@@ -791,6 +768,54 @@ mod tests {
         let states = in_scope(&managed_fabric_node.sysfs).unwrap().devices;
 
         assert!(verify_capable(&states, Mode::Ppcie).is_err());
+    }
+
+    /// A data-path NIC and a VF share the management PFs' vendor and device
+    /// id, so a claim by ids alone would take them off the host too.
+    #[rstest]
+    #[case::blackwell(0x2901)]
+    #[case::rubin(0x3002)]
+    fn management_binding_and_persistence_exclude_ordinary_nics(
+        managed_fabric_node: Fake,
+        #[case] device: u16,
+    ) {
+        let fake = managed_fabric_node;
+        fake.add_pci_device("0000:40:00.0", 0x10de, device, 0x030200, None);
+        fake.add_driver("vfio-pci");
+        let node = in_scope(&fake.sysfs).unwrap();
+        let states = &node.devices;
+        verify_capable(states, Mode::On).unwrap();
+        fabric::verify(&node, Destination::ServiceVm).unwrap();
+        let targets = loaded(&on_vfio_pci(states, Destination::ServiceVm));
+        assert_eq!(targets.len(), 3);
+        assert_eq!(loaded(&on_vfio_pci(states, Destination::Host)).len(), 1);
+        let host = tempfile::tempdir().unwrap();
+        persist(host.path(), &targets).unwrap();
+        let options = fs::read_to_string(
+            host.path()
+                .join("etc/modprobe.d/kata-device-provisioner.conf"),
+        )
+        .unwrap();
+        assert!(!options.contains("15b3"));
+        let rules = fs::read_to_string(
+            host.path()
+                .join("etc/udev/rules.d/71-kata-device-provisioner.rules"),
+        )
+        .unwrap();
+        assert!(rules.contains("0000:05:00.0"));
+        assert!(rules.contains("0000:05:00.1"));
+        assert!(!rules.contains("0000:06:00.0"));
+        for state in states.iter().filter(|s| s.is_fabric()) {
+            // The fixture records sysfs writes but has no kernel to complete the probe.
+            vfio::bind(&fake.sysfs, &state.address, "vfio-pci").unwrap();
+            assert!(vfio::verify_bound(&fake.sysfs, &state.address, "vfio-pci").is_err());
+            assert_eq!(fake.driver_override(&state.address).trim(), "vfio-pci");
+            fake.add_device(&state.address, Some("vfio-pci"));
+            vfio::verify_bound(&fake.sysfs, &state.address, "vfio-pci").unwrap();
+            nvidia::verify_mode(state, Mode::On).unwrap();
+        }
+        assert!(vfio::current_driver(&fake.sysfs, "0000:06:00.0").is_none());
+        assert!(vfio::current_driver(&fake.sysfs, "0000:05:00.2").is_none());
     }
 
     /// Turning CC off is still allowed there: it is only a raised mode that
