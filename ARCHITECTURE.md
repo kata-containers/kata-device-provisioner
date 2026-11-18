@@ -217,11 +217,11 @@ for nodes that *joined*, not for nodes that *rebooted*.
 
 #### What boot-time binding must not depend on
 
-The NVIDIA host driver must not be installed on a provisioned node. With no
-`nvidia.ko` to claim the GPU first, binding at boot is binding an unbound
-device, and the whole class of initramfs ordering workarounds that VFIO
-passthrough guides are full of does not apply. `host-check` enforces this rather
-than assuming it, and `nouveau` is checked alongside it.
+The NVIDIA host driver must not be installed on a provisioned node, and the
+initramfs must not carry it either. With no `nvidia.ko` to claim the GPU first,
+binding at boot is binding an unbound device. `host-check` enforces the first
+half rather than assuming it, and `nouveau` is checked alongside it; the second
+half is a node-image fact, see the persistence section.
 
 That is what makes the mechanism as small as it is: a couple of configuration
 files and no code running at boot at all, decided below.
@@ -423,9 +423,35 @@ binary installed on the host and nothing for an operator to debug when it works.
 
 This is only sound because the NVIDIA host driver is absent, which `host-check`
 enforces: `ids=` claims a device that nothing else wanted, rather than racing a
-driver that already has it. On a node with `nvidia.ko` installed this mechanism
-would lose the race, and so would every other mechanism short of the kernel
-command line.
+driver that already has it. On a node with `nvidia.ko` installed the host
+driver, autoloaded for the GPU's PCI identity, binds the GPU before `vfio-pci`
+loads, and any `nvidia-smi` on the host, a monitoring probe included, loads it
+again; taking a GPU back would need the bind-event rule the management PFs
+have, or the kernel command line.
+
+On a node whose initramfs is built host-only, as DGX OS builds it with dracut,
+the first probe of every device happens in the initramfs, about 15 s before the
+root filesystem's `modules-load.d` runs, with the copies of `modprobe.d`,
+`modules-load.d` and `udev/rules.d` that were on the node when the initramfs
+was built. A host driver the initramfs carries claims the device there, and a
+driver removed from `/lib/modules` stays in the initramfs until it is
+regenerated. The detach rule recovers a management PF regardless, from the
+`add` event the root filesystem's udev replays; a GPU is recovered only by
+regenerating the initramfs, which then loads `vfio-pci` with its `ids=` and
+runs the udev rules before any other driver sees the devices.
+
+The management ConnectX PFs of a Bx00 or Rx00 board cannot use `ids=` at all:
+the node's data-path NICs share their vendor and device id, and `ids=` would
+hand every one of them to `vfio-pci`. Their claim is therefore scoped by
+address as well, as a udev rule keyed on `KERNEL` and the ids, for a generic
+and a variant driver alike. The host driver may have bound the function before
+udev ran the rule, or probe it between the rule's `DRIVER` check and the
+override write, so the rule comes in two lines: a detach rule matching the
+`add` and `bind` events, never our own driver so the takeover cannot loop, that
+writes the override, unbinds the holder and probes; and the plain `add` rule
+for a function nothing claimed. An address rule follows nothing to a new slot:
+reprovision after a PCI address change, since validating the VPD role from udev
+would put a shell helper and a VPD read on every boot.
 
 It also means the node needs no help from the cluster to come back, which is the
 invariant the whole persistence question exists to serve. A rebooted node keeps

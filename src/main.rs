@@ -321,6 +321,13 @@ fn persist(
             device: state.device_id,
             module: drivers[&state.address].module.clone(),
             driver: drivers[&state.address].driver.clone(),
+            scope: match state.provisioning() {
+                // A management PF shares its ids with the node's data-path NICs.
+                Some(Provisioning::FabricManagement) => modules::Scope::Address,
+                Some(Provisioning::NvidiaInBandCc | Provisioning::NvidiaInBandPpcie) | None => {
+                    modules::Scope::Ids
+                }
+            },
         })
         .collect();
 
@@ -731,6 +738,7 @@ mod tests {
         modules::persist(
             host.path(),
             &[modules::Claim {
+                scope: modules::Scope::Ids,
                 address: address.to_string(),
                 vendor: 0x10de,
                 device: H100.0,

@@ -14,7 +14,7 @@ use anyhow::{bail, Result};
 use pcilibs_rs::{normalize_bdf, Sysfs};
 
 /// Their absence is why `modprobe.d` alone is enough at boot: nothing races
-/// `vfio-pci` for the device, so it needs no initramfs ordering games.
+/// `vfio-pci` for the device.
 const CONFLICTING_DRIVERS: &[&str] = &["nvidia", "nouveau"];
 
 /// Says nothing about vfio drivers: requiring `vfio-pci` here would load it

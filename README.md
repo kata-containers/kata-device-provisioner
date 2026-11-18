@@ -42,7 +42,10 @@ waiting for a reboot:
 
 That is the whole mechanism. No service runs at boot and nothing is ordered
 against the kubelet: `vfio-pci` is handed the ids as it loads, which is before
-any other driver has looked at those devices.
+any other driver on the root filesystem has looked at those devices. An
+initramfs that carries a host GPU driver, or that predates the provisioning
+run, is not covered: regenerate it after removing the driver, and the boot
+configuration takes effect inside it as well.
 
 Which module a device needs is read from the running kernel's `modules.alias`
 rather than decided here, so a Grace GPU gets `nvgrace_gpu_vfio_pci` and the
