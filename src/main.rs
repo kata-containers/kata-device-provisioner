@@ -321,6 +321,11 @@ fn persist(
             device: state.device_id,
             module: drivers[&state.address].module.clone(),
             driver: drivers[&state.address].driver.clone(),
+            // A management PF shares its ids with the node's data-path NICs.
+            scope: match state.provisioning() {
+                Some(Provisioning::FabricManagement) => modules::Scope::Address,
+                _ => modules::Scope::Ids,
+            },
         })
         .collect();
 
@@ -731,6 +736,7 @@ mod tests {
         modules::persist(
             host.path(),
             &[modules::Claim {
+                scope: modules::Scope::Ids,
                 address: address.to_string(),
                 vendor: 0x10de,
                 device: H100.0,
