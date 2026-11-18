@@ -50,6 +50,15 @@ GPU beside it gets plain `vfio-pci` without either being named in this tree.
 The variant drivers match on nothing but `driver_override`, which no modprobe
 file can write, so those devices are carried by the udev rule instead.
 
+`apply --mode off --bind-fabric` binds the NVSwitch fabric as well, for a
+ServiceVM: the switch chips on an Hx00 board, the management ConnectX PFs on a
+Bx00 or Rx00 board. The device plugin advertises that fabric as one
+`nvidia.com/nvswitch-fabric` device only once all of it is bound, so a run that
+would bind part of it is refused before any GPU mode changes, and a fabric
+nobody asks for stays on the host whole. Stop the host's fabric manager and
+unbind its management PFs first; a target another driver holds is refused. The
+chart passes the flag for a profile that sets `bindFabric: true`.
+
 The work is driverless. CC mode is set in-band over BAR0 and the FSP mailbox
 via [`pcilibs_rs::cc`](https://github.com/kata-containers/pcilibs-rs), so the NVIDIA
 kernel driver never has to be present, and PCI/VFIO truth is read from sysfs

@@ -542,6 +542,30 @@ stage. `vfio::bind` would refuse to steal it anyway, but at bind time, after
 the GPU modes have changed; on a DGX Rubin NVL8 the fabric manager's four
 management PFs were exactly that target.
 
+### Fabric management belongs to the ServiceVM
+
+`--bind-fabric` passes the fabric through independently of the GPU mode. The
+fabric is what pcilibs-rs names on the node through `Topology::fabric()`: the
+NVSwitch chips on Hx00, the management ConnectX PFs on Bx00 and Rx00, qualified
+by the VPD role the HGX guide documents or by sitting beside a marked sibling
+PF. VFs and ordinary NICs are never named, so a candidate node label cannot
+bypass the scan, and the scan runs only on a node with a fabric candidate.
+
+kata-device-plugin advertises that fabric as one `nvidia.com/nvswitch-fabric`
+device, and only once every function the scan names is bound; a Service VM
+requests `nvidia.com/nvswitch-fabric: 1` on every platform. The provisioner
+therefore binds the fabric whole or not at all: a run that would leave any of
+its functions on the host is refused before a GPU is touched, and a fabric
+nobody asked for stays on the host whole. PPCIE is unchanged: the switch chips
+go to the one confidential VM that takes the board, and a board whose fabric
+is reached through management PFs cannot take PPCIE at all.
+
+Validated on a DGX Rubin NVL8 (2026-11-18): the scan named the four marked
+ConnectX-9 PFs and none of the sixteen data-path PFs beside the GPUs, `apply`
+bound the eight GPUs and the fabric with CC off, a second run changed nothing,
+and the same run succeeded as the chart's per-node Job. A cold boot and a
+Service VM bringing the fabric up remain to be validated there.
+
 #### What was rejected
 
 - **A systemd oneshot running this binary at boot**, with a kubelet drop-in that

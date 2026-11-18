@@ -23,6 +23,7 @@ src/
              plus the NVSwitch fabric pcilibs-rs names on the node
   drivers.rs which vfio driver claims a device, from the kernel's alias table,
              and whether it can be claimed now
+  fabric.rs  the NVSwitch fabric a Service VM is given, whole or not at all
   host.rs    host-check: can this node do passthrough at all
   idle.rs    who has the device open, via /proc and /dev/vfio
   modules.rs loading a module with the host's modprobe, and the boot
