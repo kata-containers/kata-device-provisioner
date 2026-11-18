@@ -378,7 +378,10 @@ fn verify_capable(states: &[DeviceState], mode: Mode) -> Result<()> {
         let grace_attached: Vec<String> = states
             .iter()
             .filter(|state| state.provisioning() == Some(Provisioning::NvidiaInBandCc))
-            .filter(|state| cc::is_c2c(state.device_id))
+            .filter(|state| {
+                cc::is_c2c(state.device_id)
+                    && cc::chip_for(state.device_id).is_some_and(|chip| !chip.c2c_cc_supported)
+            })
             .map(|state| format!("{} ({})", state.address, state.device_name))
             .collect();
 
@@ -507,7 +510,7 @@ fn uninstall(roots: &Roots) -> Result<()> {
 mod tests {
     use super::*;
     use crate::device::tests::{
-        managed_fabric_node, node, A100, B200, GB200, GB202, GH200, H100, NVSWITCH,
+        managed_fabric_node, node, A100, B200, GB200, GB202, GH200, H100, NVSWITCH, RUBIN_C2C,
     };
     use pcilibs_rs::cc::CcMode;
     use pcilibs_rs::testfs::{self, Fake};
@@ -585,7 +588,7 @@ mod tests {
     #[rstest]
     #[case::grace_hopper(GH200)]
     #[case::grace_blackwell(GB200)]
-    #[case::coherent_rubin((0x3041, 0x030200))]
+    #[case::coherent_rubin(RUBIN_C2C)]
     #[case::ambiguous_attachment((0x29bc, 0x030200))]
     #[case::unknown_gpu((0xffff, 0x030200))]
     fn missing_variant_support_is_not_hidden_by_generic_vfio(
@@ -627,7 +630,7 @@ mod tests {
     #[rstest]
     #[case::grace_hopper(GH200)]
     #[case::grace_blackwell(GB200)]
-    #[case::coherent_rubin((0x3041, 0x030200))]
+    #[case::coherent_rubin(RUBIN_C2C)]
     fn a_generic_alias_cannot_replace_a_required_variant(
         sysfs: Fake,
         alias_file: tempfile::NamedTempFile,
@@ -1001,6 +1004,8 @@ mod tests {
     #[case::grace_blackwell_on(GB200, Mode::On, false)]
     #[case::grace_blackwell_devtools(GB200, Mode::DevTools, false)]
     #[case::grace_blackwell_off(GB200, Mode::Off, true)]
+    #[case::rubin_c2c_can_enable_cc(RUBIN_C2C, Mode::On, true)]
+    #[case::rubin_c2c_can_enable_devtools(RUBIN_C2C, Mode::DevTools, true)]
     #[case::pcie_gpu_is_ours_to_set(H100, Mode::On, true)]
     fn refuses_to_raise_cc_where_the_cpu_cannot_back_it(
         sysfs: Fake,
