@@ -119,6 +119,7 @@ mod tests {
         fn state(&self) -> DeviceState {
             discover(&self.fake.sysfs)
                 .unwrap()
+                .devices
                 .into_iter()
                 .find(|state| state.address == "0000:65:00.0")
                 .unwrap()

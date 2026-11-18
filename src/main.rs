@@ -16,7 +16,7 @@ use anyhow::{bail, Context, Result};
 use clap::{Args, Parser, Subcommand};
 use pcilibs_rs::cc;
 
-use crate::device::{discover, DeviceState, Provisioning};
+use crate::device::{discover, in_scope, DeviceState, Provisioning};
 use crate::idle::{DEV_VFIO, PROC};
 use crate::mode::Mode;
 use crate::nvidia::Transition;
@@ -97,7 +97,8 @@ fn main() -> Result<()> {
 }
 
 fn status(probe: bool, all: bool, sysfs: &Sysfs) -> Result<()> {
-    let mut states = discover(sysfs)?;
+    let node = discover(sysfs)?;
+    let mut states = node.devices;
     states.retain(|state| all || state.in_scope());
 
     if states.is_empty() {
@@ -116,6 +117,7 @@ fn status(probe: bool, all: bool, sysfs: &Sysfs) -> Result<()> {
         let provisioning = match state.provisioning() {
             Some(Provisioning::NvidiaInBandCc) => "nvidia-in-band-cc",
             Some(Provisioning::NvidiaInBandPpcie) => "nvidia-in-band-ppcie",
+            Some(Provisioning::FabricManagement) => "fabric-management",
             None => "out-of-scope",
         };
         let cc = match (&state.cc_mode, state.cc_chip) {
@@ -149,6 +151,10 @@ fn status(probe: bool, all: bool, sysfs: &Sysfs) -> Result<()> {
         }
     }
 
+    if !node.fabric.is_empty() {
+        println!("fabric: {}", node.fabric.join(", "));
+    }
+
     for (address, err) in &failures {
         eprintln!("{address}: CC mode unreadable: {err}");
     }
@@ -161,7 +167,7 @@ fn apply(mode: Mode, roots: &Roots) -> Result<()> {
 
     host::check(&sysfs)?;
 
-    let mut states = in_scope(&sysfs)?;
+    let mut states = in_scope(&sysfs)?.devices;
     if states.is_empty() {
         bail!("no devices in scope: this node was selected for provisioning but has none");
     }
@@ -232,13 +238,13 @@ fn release(sysfs: &Sysfs, states: &[DeviceState], passthrough: &[DeviceState]) -
 }
 
 /// Only PPCIE gives one guest the whole baseboard; the other modes are
-/// single-GPU, where taking the switches off the host would strand them.
+/// single-GPU, where taking the fabric off the host would strand it. That
+/// holds for the switch chips and for the management PFs that stand in for
+/// them alike.
 fn passthrough_set(states: &[DeviceState], mode: Mode) -> Vec<DeviceState> {
     states
         .iter()
-        .filter(|state| {
-            mode == Mode::Ppcie || state.provisioning() != Some(Provisioning::NvidiaInBandPpcie)
-        })
+        .filter(|state| mode == Mode::Ppcie || !state.is_fabric())
         .cloned()
         .collect()
 }
@@ -350,7 +356,10 @@ fn verify_capable(states: &[DeviceState], mode: Mode) -> Result<()> {
 
     let incapable: Vec<String> = states
         .iter()
-        .filter(|state| state.provisioning() == Some(Provisioning::NvidiaInBandCc))
+        .filter(|state| {
+            state.provisioning() == Some(Provisioning::NvidiaInBandCc)
+                || (mode == Mode::Ppcie && state.is_fabric())
+        })
         .filter(|state| !capable(state))
         .map(|state| format!("{} ({})", state.address, state.device_name))
         .collect();
@@ -494,29 +503,17 @@ fn uninstall(roots: &Roots) -> Result<()> {
     Ok(())
 }
 
-fn in_scope(sysfs: &Sysfs) -> Result<Vec<DeviceState>> {
-    Ok(discover(sysfs)?
-        .into_iter()
-        .filter(DeviceState::in_scope)
-        .collect())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::device::tests::{
+        managed_fabric_node, node, A100, B200, GB200, GB202, GH200, H100, NVSWITCH,
+    };
     use pcilibs_rs::cc::CcMode;
     use pcilibs_rs::testfs::{self, Fake};
     use rstest::{fixture, rstest};
     use std::fs;
     use tempfile::TempDir;
-
-    const H100: (u16, u32) = (0x2330, 0x030200);
-    const B200: (u16, u32) = (0x2901, 0x030200);
-    const A100: (u16, u32) = (0x20b0, 0x030200);
-    const NVSWITCH: (u16, u32) = (0x22a3, 0x068000);
-    const GH200: (u16, u32) = (0x2342, 0x030200);
-    const GB200: (u16, u32) = (0x2941, 0x030200);
-    const GB202: (u16, u32) = (0x2bb5, 0x030200);
 
     #[fixture]
     fn alias_file() -> tempfile::NamedTempFile {
@@ -528,20 +525,6 @@ mod tests {
     #[fixture]
     fn sysfs() -> Fake {
         testfs::fake()
-    }
-
-    fn node(sysfs: &Fake, devices: &[(u16, u32)]) -> Vec<DeviceState> {
-        for (slot, (device, class)) in devices.iter().enumerate() {
-            sysfs.add_pci_device(
-                &format!("0000:{:02x}:00.0", slot),
-                0x10de,
-                *device,
-                *class,
-                None,
-            );
-        }
-
-        in_scope(&sysfs.sysfs).unwrap()
     }
 
     fn hold(proc_root: &TempDir, dev_vfio: &TempDir, pid: u32, comm: &str, group: &str) {
@@ -576,7 +559,22 @@ mod tests {
     ) {
         let states = node(&sysfs, &[device]);
         sysfs.add_device(&states[0].address, bound);
-        let states = in_scope(&sysfs.sysfs).unwrap();
+        let states = in_scope(&sysfs.sysfs).unwrap().devices;
+
+        assert_eq!(
+            resolve_module(alias_file.path(), &states[0]).unwrap(),
+            "vfio_pci"
+        );
+    }
+
+    /// Upstream's mlx5 variant claims only the SR-IOV VF, so a management PF
+    /// is bound generically like any other NIC.
+    #[rstest]
+    fn a_management_pf_takes_vfio_pci_when_no_variant_claims_it(
+        managed_fabric_node: Fake,
+        alias_file: tempfile::NamedTempFile,
+    ) {
+        let states = in_scope(&managed_fabric_node.sysfs).unwrap().devices;
 
         assert_eq!(
             resolve_module(alias_file.path(), &states[0]).unwrap(),
@@ -780,7 +778,7 @@ mod tests {
         let host = tempfile::tempdir().unwrap();
         hold(&proc_root, &dev_vfio, 4242, "qemu-system-x86", "14");
 
-        let mut states = in_scope(&sysfs.sysfs).unwrap();
+        let mut states = in_scope(&sysfs.sysfs).unwrap().devices;
         states[0].cc_mode = cc;
 
         let writable = writable(
@@ -985,6 +983,15 @@ mod tests {
         let states = node(&sysfs, &[B200, B200, NVSWITCH]);
 
         verify_capable(&states, Mode::On).unwrap();
+    }
+
+    /// PPCIE takes the switch chips into the board's mode; a fabric reached
+    /// through management PFs has no such mode, so the board is refused.
+    #[rstest]
+    fn managed_fabric_cannot_take_ppcie(managed_fabric_node: Fake) {
+        let states = in_scope(&managed_fabric_node.sysfs).unwrap().devices;
+
+        assert!(verify_capable(&states, Mode::Ppcie).is_err());
     }
 
     /// Turning CC off is still allowed there: it is only a raised mode that

@@ -116,23 +116,29 @@ A line per device:
 
 ```text
 0000:0a:00.0  0x10de:2330  class=0x030200  nvidia-in-band-cc  chip=GH100  driver=<unbound>   iommu_group=14  numa=0  cc=capable  GH100 [H100 SXM5 80GB]
-0000:06:00.0  0x10de:22a3  class=0x068000  bind-only          chip=-      driver=<unbound>   iommu_group=9   numa=0  cc=n/a      GH100 [NVSwitch]
+0000:06:00.0  0x10de:22a3  class=0x068000  nvidia-in-band-ppcie chip=-      driver=<unbound>   iommu_group=9   numa=0  cc=n/a      GH100 [NVSwitch]
 0000:01:00.0  0x8086:1521  class=0x020000  out-of-scope       chip=-      driver=igb         iommu_group=3   numa=0  cc=n/a      I350 Gigabit Network Connection
+fabric: 0000:06:00.0
 ```
+
+The last line is the NVSwitch fabric pcilibs-rs names on the node: the switch
+chips on an Hx00 board, the management ConnectX PFs on a Bx00 or Rx00 board,
+whose VPD role tells them from the data-path NICs that share their identity.
 
 Four fields decide everything:
 
 - **`chip`** — the GPU generation `pcilibs_rs::cc` recognises, and the answer to "can
   this GPU do confidential computing". `GH100` is Hopper, `GB1xx` Blackwell.
   A `-` on a line that says `nvidia-in-band-cc` is a GPU too old for CC.
-- **`nvidia-in-band-cc` / `bind-only` / `out-of-scope`** — what the device table
-  says this component may do. `bind-only` is an NVSwitch under per-GPU CC: passed
-  through, but it has no CC mode of its own. Under PPCIE the same device is a
-  participant. `out-of-scope` devices are listed and never touched.
-- **device id and NVSwitches** — a GH100 id (`2330`, ...) plus an NVSwitch is
-  HGX Hx00; a GB100/GB110 id (`2901`, ...) plus an NVSwitch is HGX Bx00;
-  NVIDIA GPUs and no NVSwitch is a PCIE-GPU node. A GB200/GB300 id is GBx00,
-  and a GH200 id is none of these — see below.
+- **Provisioning role** — what the device table says this component may do.
+  `nvidia-in-band-cc` is a GPU, `nvidia-in-band-ppcie` a switch chip, which
+  has no CC mode of its own and under PPCIE takes the board's, and
+  `fabric-management` a ConnectX PF the scan qualified as the fabric's. An
+  InfiniBand function the scan did not name is `out-of-scope`, like every
+  other device without a row, and is never touched.
+- **Fabric interface** — switch chips on PCI make an Hx00 board; management
+  ConnectX PFs make a Bx00 or Rx00 board. GPU identity refines the family; an
+  ordinary NIC does not establish an NVLink fabric.
 - **`iommu_group`** — every device you intend to pass through needs one. If
   these are missing the IOMMU is off, and `apply` will refuse the node.
 
@@ -165,9 +171,10 @@ Three things that are *not* heterogeneity in this sense:
   are both settable, so the node provisions. Mode is per GPU.
 - **NVSwitches.** They have no per-GPU CC mode; they are bound, and under PPCIE
   they take the board's mode.
-- **Anything not NVIDIA.** An AMD GPU or a passthrough-capable NIC has no row in
-  the device table, so it is reported by `status --all` and never touched. It
-  does not make the node mixed.
+- **Anything not NVIDIA.** An AMD GPU or an ordinary NIC has no row in the
+  device table, so it is reported by `status --all` and never touched. A
+  management ConnectX PF has one, but it is bind-only and needs no CC
+  capability. Neither makes the node mixed.
 
 For a fleet that really does have older GPUs on some nodes, give those nodes
 `ccMode: off` — they still get bound to `vfio-pci` and are still usable for

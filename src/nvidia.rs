@@ -29,6 +29,9 @@ pub fn generic_vfio_supported(state: &DeviceState) -> bool {
     match state.provisioning() {
         Some(Provisioning::NvidiaInBandCc) => state.cc_capable() && !cc::is_c2c(state.device_id),
         Some(Provisioning::NvidiaInBandPpcie) => true,
+        // Upstream's mlx5 variant claims the SR-IOV VF alone; a management PF
+        // is bound generically like any other NIC.
+        Some(Provisioning::FabricManagement) => true,
         None => false,
     }
 }
