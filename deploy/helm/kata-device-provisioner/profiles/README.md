@@ -194,25 +194,26 @@ config space via node-feature-discovery, so they survive binding. The chart
 ships the NodeFeatureRule that produces them (`nodeFeatureRule.enabled`); NFD
 itself has to be in the cluster already, which kata-deploy can arrange.
 
-`nvidia-gpu` and `nvidia-nvswitch` are vendor and PCI class. `nvidia-hopper` and
-`nvidia-blackwell` are chip generations, matched on the device-id ranges
-`pcilibs_rs::cc`'s `CHIPS` table already tracks (GH100 for Hopper, GB100 and
-GB110 for Blackwell) rather than one id per SKU, so a fleet mixing H100 and
-H200, or B200 and B300, is one release. A generation this tree does not know
-about yet means a node is not selected; the provisioner still reads the
-hardware and refuses a mode the board cannot take.
+`nvidia-gpu` and `nvidia-nvswitch` match vendor and PCI class. The GPU-family
+labels are generated from the PCI identity catalog in pcilibs-rs, the same one
+the binary classifies devices with, keyed on device id and, where one id is
+sold as several attachments, subsystem device id: `31c2` with an SXM subsystem
+is HGX B300 and `nvidia-blackwell`, `31c2` with a coherent subsystem is GB300
+and `nvidia-grace-blackwell`. The Hopper and Blackwell HGX labels take SXM
+parts only; `nvidia-rubin` takes coherent variants too, because attachment does
+not determine whether Rubin can enable CC. A part the catalog does not know is
+a node that is not selected, never one that is mislabelled. After a pcilibs-rs
+bump, regenerate the template with `UPDATE_NODE_FEATURE_RULE=1 cargo test
+--test node_feature_rule`; `cargo test` fails while it is out of date.
 
-Both rules carve the C2C ids back out of their range (`pcilibs_rs::cc::
-C2C_DEVIDS`): GH200 out of Hopper, GB200 and GB300 out of Blackwell. Those are
-Grace superchips, which the baseboard profiles would provision wrongly on two
-counts — a coherently attached GPU needs `nvgrace_gpu_vfio_pci`, and no CC mode
-can be raised on a node whose CPU has no CC of its own.
+`nvidia-managed-fabric-candidate` is an SXM Blackwell or Rubin GPU beside an
+InfiniBand ConnectX function: a selection hint, never proof of a management
+role, which only the Job's VPD read on the node can establish. `nvidia-c2c`
+excludes coherent variants, Rubin's included, from the PCIe profiles; it is
+the one label kept to device ids alone, mirroring the binary's `is_c2c`, so a
+PCIe profile never selects a node whose GPU the binary would then refuse plain
+`vfio-pci` for. `nvidia-grace-blackwell` is what `GBx00` selects. GH200 has no
+label, because nothing selects on it yet.
 
-`nvidia-c2c` names the same ids outright, so the `PCIE-GPU` profiles can
-exclude them: their base match, `nvidia-gpu`, is not range-restricted the way
-the generation labels are, and a superchip has no NVSwitch either, so one would
-otherwise pass their "add-in card" test.
-
-`nvidia-grace-blackwell` is the GB200/GB300 half of that same list, which is
-what `GBx00` selects. GH200 has no equivalent label, because nothing selects on
-it yet.
+On a DGX Rubin NVL8 the rule produced `nvidia-gpu`, `nvidia-rubin` and
+`nvidia-managed-fabric-candidate`, and not `nvidia-c2c`.
