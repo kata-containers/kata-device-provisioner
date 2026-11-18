@@ -3,6 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 mod device;
+mod drivers;
 mod host;
 mod idle;
 mod mode;
@@ -17,6 +18,7 @@ use clap::{Args, Parser, Subcommand};
 use pcilibs_rs::cc;
 
 use crate::device::{discover, in_scope, DeviceState, Provisioning};
+use crate::drivers::VfioDriver;
 use crate::idle::{DEV_VFIO, PROC};
 use crate::mode::Mode;
 use crate::nvidia::Transition;
@@ -178,7 +180,8 @@ fn apply(mode: Mode, roots: &Roots) -> Result<()> {
     let passthrough = passthrough_set(&states, mode);
 
     // Before any reset, so a missing driver is not found out half way through.
-    let drivers = resolve_drivers(&sysfs, roots, &passthrough)?;
+    let drivers = drivers::resolve(&sysfs, &roots.host_root, &roots.proc, &passthrough)?;
+    drivers::verify_bindable(&sysfs, &passthrough, &drivers)?;
 
     // Re-read in `nvidia::apply`: hardware may change after this safety check.
     let unreadable = nvidia::probe_modes(&mut states);
@@ -221,10 +224,8 @@ fn release(sysfs: &Sysfs, states: &[DeviceState], passthrough: &[DeviceState]) -
             continue;
         }
 
-        // Substring, because a variant driver is named after the one it
-        // stands in for: nvgrace_gpu_vfio_pci, mlx5_vfio_pci.
-        let Some(driver) = vfio::current_driver(sysfs, &state.address)
-            .filter(|driver| driver.replace('-', "_").contains("vfio"))
+        let Some(driver) =
+            vfio::current_driver(sysfs, &state.address).filter(|driver| drivers::is_vfio(driver))
         else {
             continue;
         };
@@ -247,65 +248,6 @@ fn passthrough_set(states: &[DeviceState], mode: Mode) -> Vec<DeviceState> {
         .filter(|state| mode == Mode::Ppcie || !state.is_fabric())
         .cloned()
         .collect()
-}
-
-/// The fallback to `vfio-pci` is right for an ordinary PCIe GPU and wrong for
-/// a coherently attached one, which would reach a VM with its memory missing.
-fn verify_variant_available(state: &DeviceState, module: &str) -> Result<()> {
-    if !cc::is_c2c(state.device_id) || module.replace('-', "_") != "vfio_pci" {
-        return Ok(());
-    }
-
-    bail!(
-        "{} ({}) is coherently attached over NVLink-C2C and needs a vfio driver that can map \
-         its memory, but this kernel's module alias table offers only {module}, which cannot. \
-         The node needs a kernel whose nvgrace-gpu vfio driver claims this device",
-        state.address,
-        state.device_name
-    )
-}
-
-/// modprobe takes the module, `driver_override` the driver, and they differ.
-struct VfioDriver {
-    module: String,
-    driver: String,
-}
-
-fn resolve_module(alias: &Path, state: &DeviceState) -> Result<String> {
-    let module = modules::vfio_module(
-        alias,
-        state.vendor,
-        state.device_id,
-        nvidia::generic_vfio_supported(state),
-    )?;
-    verify_variant_available(state, &module)?;
-    Ok(module)
-}
-
-/// Per device: a Grace GPU needs `nvgrace_gpu_vfio_pci` where the NIC beside
-/// it takes plain `vfio-pci`.
-fn resolve_drivers(
-    sysfs: &Sysfs,
-    roots: &Roots,
-    states: &[DeviceState],
-) -> Result<HashMap<String, VfioDriver>> {
-    let alias = modules::modules_alias(&roots.host_root, &roots.proc)?;
-    let mut drivers = HashMap::new();
-
-    for state in states {
-        let module = resolve_module(&alias, state)
-            .with_context(|| format!("{}: find its vfio module", state.address))?;
-
-        modules::modprobe(&roots.host_root, &module)
-            .with_context(|| format!("{}: load {module}", state.address))?;
-
-        let driver = vfio::driver_for(sysfs, &module)
-            .with_context(|| format!("{}: find the driver {module} registers", state.address))?;
-
-        drivers.insert(state.address.clone(), VfioDriver { module, driver });
-    }
-
-    Ok(drivers)
 }
 
 fn persist(
@@ -471,7 +413,7 @@ fn writable(
             let current = vfio::current_driver(sysfs, &state.address);
 
             if !passthrough.iter().any(|kept| kept.address == state.address) {
-                return current.is_some_and(|driver| driver.replace('-', "_").contains("vfio"));
+                return current.is_some_and(|driver| drivers::is_vfio(&driver));
             }
 
             match drivers.get(&state.address) {
@@ -515,20 +457,14 @@ fn uninstall(roots: &Roots) -> Result<()> {
 mod tests {
     use super::*;
     use crate::device::tests::{
-        managed_fabric_node, node, A100, B200, GB200, GB202, GH200, H100, NVSWITCH, RUBIN_C2C,
+        managed_fabric_node, node, A100, B200, GB200, GH200, H100, NVSWITCH, RUBIN_C2C,
     };
+    use crate::drivers::tests::vfio_pci;
     use pcilibs_rs::cc::CcMode;
     use pcilibs_rs::testfs::{self, Fake};
     use rstest::{fixture, rstest};
     use std::fs;
     use tempfile::TempDir;
-
-    #[fixture]
-    fn alias_file() -> tempfile::NamedTempFile {
-        let file = tempfile::NamedTempFile::new().unwrap();
-        fs::write(file.path(), "alias vfio_pci:v*d*sv*sd*bc*sc*i* vfio_pci\n").unwrap();
-        file
-    }
 
     #[fixture]
     fn sysfs() -> Fake {
@@ -552,129 +488,6 @@ mod tests {
             dev_vfio: dev_vfio.path().to_path_buf(),
             host_root: host.path().to_path_buf(),
         }
-    }
-
-    #[rstest]
-    #[case::h100(H100)]
-    #[case::b200(B200)]
-    #[case::rtx_pro_6000(GB202)]
-    #[case::nvswitch(NVSWITCH)]
-    fn supported_noncoherent_devices_need_no_specific_vfio_alias(
-        sysfs: Fake,
-        alias_file: tempfile::NamedTempFile,
-        #[case] device: (u16, u32),
-        #[values(None, Some("vfio-pci"))] bound: Option<&str>,
-    ) {
-        let states = node(&sysfs, &[device]);
-        sysfs.add_device(&states[0].address, bound);
-        let states = in_scope(&sysfs.sysfs).unwrap().devices;
-
-        assert_eq!(
-            resolve_module(alias_file.path(), &states[0]).unwrap(),
-            "vfio_pci"
-        );
-    }
-
-    /// Upstream's mlx5 variant claims only the SR-IOV VF, so a management PF
-    /// is bound generically like any other NIC.
-    #[rstest]
-    fn a_management_pf_takes_vfio_pci_when_no_variant_claims_it(
-        managed_fabric_node: Fake,
-        alias_file: tempfile::NamedTempFile,
-    ) {
-        let states = in_scope(&managed_fabric_node.sysfs).unwrap().devices;
-
-        assert_eq!(
-            resolve_module(alias_file.path(), &states[0]).unwrap(),
-            "vfio_pci"
-        );
-    }
-
-    #[rstest]
-    #[case::grace_hopper(GH200)]
-    #[case::grace_blackwell(GB200)]
-    #[case::coherent_rubin(RUBIN_C2C)]
-    #[case::ambiguous_attachment((0x29bc, 0x030200))]
-    #[case::unknown_gpu((0xffff, 0x030200))]
-    fn missing_variant_support_is_not_hidden_by_generic_vfio(
-        sysfs: Fake,
-        alias_file: tempfile::NamedTempFile,
-        #[case] device: (u16, u32),
-    ) {
-        let states = node(&sysfs, &[device]);
-
-        assert!(resolve_module(alias_file.path(), &states[0]).is_err());
-    }
-
-    #[rstest]
-    #[case::grace_hopper(GH200, "nvgrace_gpu_vfio_pci")]
-    #[case::grace_blackwell(GB200, "nvgrace_gpu_vfio_pci")]
-    #[case::device_specific_override(GB202, "custom_vfio_pci")]
-    fn specific_kernel_aliases_still_choose_the_module(
-        sysfs: Fake,
-        alias_file: tempfile::NamedTempFile,
-        #[case] device: (u16, u32),
-        #[case] module: &str,
-    ) {
-        fs::write(
-            alias_file.path(),
-            format!(
-                "alias vfio_pci:v000010DEd{:08X}sv*sd*bc*sc*i* {module}\n",
-                device.0
-            ),
-        )
-        .unwrap();
-        let states = node(&sysfs, &[device]);
-
-        assert_eq!(
-            resolve_module(alias_file.path(), &states[0]).unwrap(),
-            module
-        );
-    }
-
-    #[rstest]
-    #[case::grace_hopper(GH200)]
-    #[case::grace_blackwell(GB200)]
-    #[case::coherent_rubin(RUBIN_C2C)]
-    fn a_generic_alias_cannot_replace_a_required_variant(
-        sysfs: Fake,
-        alias_file: tempfile::NamedTempFile,
-        #[case] device: (u16, u32),
-    ) {
-        fs::write(
-            alias_file.path(),
-            format!(
-                "alias vfio_pci:v000010DEd{:08X}sv*sd*bc*sc*i* vfio_pci\n",
-                device.0
-            ),
-        )
-        .unwrap();
-        let states = node(&sysfs, &[device]);
-
-        let err = resolve_module(alias_file.path(), &states[0]).unwrap_err();
-        assert!(
-            format!("{err:#}").contains("coherently attached"),
-            "{err:#}"
-        );
-    }
-
-    #[rstest]
-    #[case::missing(false)]
-    #[case::unreadable_contents(true)]
-    fn a_broken_alias_table_is_not_a_generic_vfio_fallback(
-        sysfs: Fake,
-        alias_file: tempfile::NamedTempFile,
-        #[case] invalid_data: bool,
-    ) {
-        let states = node(&sysfs, &[GB202]);
-        if invalid_data {
-            fs::write(alias_file.path(), [0xff]).unwrap();
-        } else {
-            fs::remove_file(alias_file.path()).unwrap();
-        }
-
-        let err = resolve_module(alias_file.path(), &states[0]).unwrap_err();
-        assert!(format!("{err:#}").contains("read "), "{err:#}");
     }
 
     #[rstest]
@@ -759,13 +572,6 @@ mod tests {
             .path()
             .join("etc/modprobe.d/kata-device-provisioner.conf")
             .exists());
-    }
-
-    fn vfio_pci() -> VfioDriver {
-        VfioDriver {
-            module: "vfio_pci".to_string(),
-            driver: "vfio-pci".to_string(),
-        }
     }
 
     /// `apply` itself requires chroot and the host's modprobe.
@@ -899,29 +705,6 @@ mod tests {
         let states = node(&sysfs, &[device]);
 
         assert_eq!(target_of(&states, &states[0].address, mode), expected);
-    }
-
-    /// The kernel names the variant module with underscores and sysfs names
-    /// the driver with dashes, and either can reach this.
-    #[rstest]
-    #[case::grace_hopper(GH200, "nvgrace_gpu_vfio_pci", true)]
-    #[case::grace_blackwell(GB200, "nvgrace-gpu-vfio-pci", true)]
-    #[case::pcie_gpu_needs_no_variant(H100, "vfio-pci", true)]
-    #[case::nvswitch_needs_no_variant(NVSWITCH, "vfio_pci", true)]
-    #[case::grace_on_a_kernel_too_old(GH200, "vfio-pci", false)]
-    #[case::grace_on_a_kernel_too_old_underscored(GB200, "vfio_pci", false)]
-    fn refuses_a_grace_gpu_the_kernel_has_no_driver_for(
-        sysfs: Fake,
-        #[case] device: (u16, u32),
-        #[case] module: &str,
-        #[case] expected: bool,
-    ) {
-        let states = node(&sysfs, &[device]);
-
-        assert_eq!(
-            verify_variant_available(&states[0], module).is_ok(),
-            expected
-        );
     }
 
     #[rstest]

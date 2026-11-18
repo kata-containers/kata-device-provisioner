@@ -527,11 +527,20 @@ have non-coherent subsystem variants. The consequence is a refusal on parts that
 would have been fine, chosen over silently mis-binding a coherent one.
 
 The alias table cannot tell "no variant driver exists" from "this kernel has not
-heard of it", but `pcilibs_rs::cc` can, because it already carries the C2C device ids to
-decide where no CC mode can be raised at all — the same set, since C2C is
-what makes the variant driver necessary. So a coherently attached GPU that
-resolves to plain `vfio-pci` is refused with the kernel named as the problem,
-and every other device keeps the fallback.
+heard of it": `vfio_pci` registers only a catch-all alias, so on every kernel
+the table is silent on an H100, a B200, an NVSwitch and a ConnectX PF, and
+silence has to mean generic `vfio-pci` for those or no HGX node could be
+provisioned at all. What decides is the catalog, which already carries the C2C
+device ids to say where no CC mode can be raised: a CC GPU it knows as
+noncoherent, an NVSwitch and a management PF take the fallback, while a
+coherent GPU, or a GPU the catalog does not know, cannot prove the fallback
+safe and is refused with the kernel named as the problem. A table that cannot
+be read at all stays an error, which a bare NotFound would have hidden.
+
+A target another driver holds is refused at the same point, before the mode
+stage. `vfio::bind` would refuse to steal it anyway, but at bind time, after
+the GPU modes have changed; on a DGX Rubin NVL8 the fabric manager's four
+management PFs were exactly that target.
 
 #### What was rejected
 
