@@ -19,11 +19,12 @@ libc = "0.2"
 # disagree about what a device is. `cc` adds in-band CC mode over BAR0 and the
 # FSP mailbox, needing no NVIDIA kernel driver.
 #
-# Includes the MNOC partial-word reply fix needed to enable CC on GB202.
-pcilibs-rs = { git = "https://github.com/kata-containers/pcilibs-rs", rev = "c26e25c520a92463d21281d549142b983014d64d", features = ["cc"] }
+# Topology::fabric names the fabric a Service VM is given, and the testfs
+# ConnectX and IOMMU group fixtures are what the tests build nodes with.
+pcilibs-rs = { git = "https://github.com/kata-containers/pcilibs-rs", rev = "77cf9b5209b24bc71e5b5d612798b0f7f2daf038", features = ["cc"] }
 
 [dev-dependencies]
 # The fake sysfs trees the library's own tests use.
-pcilibs-rs = { git = "https://github.com/kata-containers/pcilibs-rs", rev = "c26e25c520a92463d21281d549142b983014d64d", features = ["cc", "testfs"] }
+pcilibs-rs = { git = "https://github.com/kata-containers/pcilibs-rs", rev = "77cf9b5209b24bc71e5b5d612798b0f7f2daf038", features = ["cc", "testfs"] }
 rstest = "0.28.0"
 tempfile = "3"

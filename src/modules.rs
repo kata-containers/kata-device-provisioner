@@ -42,15 +42,15 @@ pub fn vfio_module(
     device: u16,
     allow_generic: bool,
 ) -> Result<String> {
-    match pcilibs_rs::vfio::module_for(aliases, vendor, device) {
-        Ok(module) => Ok(module),
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound && allow_generic => {
-            // NotFound can also mean the table is missing. A fallback must not
-            // hide that failure or an unreadable replacement of the table.
-            fs::read_to_string(aliases).with_context(|| format!("read {}", aliases.display()))?;
-            Ok("vfio_pci".to_string())
-        }
-        Err(err) => Err(err.into()),
+    // Only a variant driver has a device-specific alias; `vfio_pci` registers
+    // a catch-all, so the table is silent on every other device.
+    match pcilibs_rs::vfio::module_for(aliases, vendor, device)? {
+        Some(module) => Ok(module),
+        None if allow_generic => Ok("vfio_pci".to_string()),
+        None => bail!(
+            "no vfio variant driver claims {vendor:04x}:{device:04x}, and generic vfio-pci is \
+             not known to be safe for it"
+        ),
     }
 }
 
