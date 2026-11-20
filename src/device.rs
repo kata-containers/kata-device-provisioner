@@ -43,6 +43,12 @@ pub struct DeviceRow {
 /// A device with no row is never touched. The identities match
 /// kata-device-plugin's, so the two cannot disagree about what a device is.
 pub const DEVICES: &[DeviceRow] = &[
+    DeviceRow {
+        vendor: 0x10de,
+        class_prefix: 0x0300,
+        provisioning: Provisioning::NvidiaInBandCc,
+        cc_labels: Some(&NVIDIA_CC_LABELS),
+    },
     // NVIDIA GPU: 3D controller.
     DeviceRow {
         vendor: 0x10de,
@@ -206,7 +212,7 @@ mod tests {
     )]
     #[case::pre_cc_gpu(0x10de, 0x20b0, 0x030200, Some(Provisioning::NvidiaInBandCc), None)]
     #[case::nvswitch(0x10de, 0x22a3, 0x068000, Some(Provisioning::NvidiaInBandPpcie), None)]
-    #[case::display_gpu(0x10de, 0x25b2, 0x030000, None, None)]
+    #[case::display_gpu(0x10de, 0x25b2, 0x030000, Some(Provisioning::NvidiaInBandCc), None)]
     #[case::amd_gpu(0x1002, 0x74a1, 0x030200, None, None)]
     #[case::intel_nic(0x8086, 0x1521, 0x020000, None, None)]
     fn table_decides_what_is_in_scope(

@@ -49,7 +49,7 @@ spec:
         - feature: pci.device
           matchExpressions:
             vendor: { op: In, value: ["10de"] }
-            class: { op: In, value: ["0302"] }
+            class: { op: In, value: ["0300", "0302"] }
     - name: "nvidia.nvswitch"
       labels:
         "kata.feature.node.kubernetes.io/nvidia-nvswitch": "true"
