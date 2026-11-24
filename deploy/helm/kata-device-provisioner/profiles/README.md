@@ -65,6 +65,18 @@ mode per class. Their selections cannot collide — the HGX profiles require an
 NVSwitch, the discrete-card ones refuse a node that has one, and both exclude
 Grace superchips by device id — so the runs never contend for a node.
 
+`HGX-Hx00` and `HGX-Bx00` set `p2pRdma: true`, which passes `--p2p-rdma` to
+the binary: the PCIe path GPUDirect RDMA takes between a GPU and the ConnectX
+beside it is set up the way the HGX Shared NVSwitch guide asks, Direct
+Translated P2P on the switch ports between them and ATS in the NIC's firmware.
+A ConnectX whose firmware had ATS off is switched on and the run stops until
+the node has rebooted; run it again afterwards. The node needs `pciutils` for
+the rule that restores the ACS bit at boot, and MFT or mstflint for that
+firmware write. The confidential profiles leave it off: ATS lets the NIC
+present addresses as already translated, which the root complex trusts past
+the IOMMU, and a confidential VM's threat model does not grant a device that
+before TDISP.
+
 ## The modes, and NVIDIA's
 
 The four modes and the labels around them are deliberately the GPU Operator's,

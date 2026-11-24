@@ -15,7 +15,7 @@
           "name": "HGX-Hx00",
           "ccMode": "off",
           "valuesFile": "profiles/HGX-Hx00.values.yaml",
-          "valuesSha256": "ab0aa1f09754bb4f2c2eb1331b19a4fa1075b75570af8232e74a86c34f09c0f9"
+          "valuesSha256": "4418da543ba6c27513d495ce6489ef213b26b7a2edac65dbba9f0f5abbdb85c1"
         },
         {
           "name": "HGX-Hx00-PPCIE",
@@ -37,7 +37,7 @@
           "name": "HGX-Bx00",
           "ccMode": "off",
           "valuesFile": "profiles/HGX-Bx00.values.yaml",
-          "valuesSha256": "23f15fedac1d4b5406e02bc759d575f042acbf7da536cb139dfb9d8f08d09029"
+          "valuesSha256": "330e3b86a544ee442b59932a786a948ce42c6ee590a3e12e991dcfa10a1c849a"
         },
         {
           "name": "HGX-Bx00-CC",

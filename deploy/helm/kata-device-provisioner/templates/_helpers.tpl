@@ -320,6 +320,9 @@ spec:
 {{- else }}
             - apply
             - "--mode={{ .ccMode }}"
+{{- if $root.Values.p2pRdma }}
+            - "--p2p-rdma"
+{{- end }}
 {{- end }}
             - "--host-root=/host"
           securityContext:

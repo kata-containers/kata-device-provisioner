@@ -20,6 +20,10 @@ profiles:
     enabled: true
     ccMode: "on"
 
+    # p2pRdma stays off. ATS lets the NIC present addresses as already
+    # translated and the root complex trusts them past the IOMMU, which a
+    # confidential VM's threat model does not grant a device before TDISP.
+
     nodeFeatureRule:
       enabled: true
 

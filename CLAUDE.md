@@ -26,6 +26,9 @@ src/
              configuration that makes the node redo the binding at boot
   mode.rs    the node-level Mode enum (off | on | devtools | ppcie)
   nvidia.rs  NVIDIA in-band CC mode, reached only via Provisioning::NvidiaInBandCc
+  p2p.rs     the PCIe path GPUDirect RDMA takes, under --p2p-rdma: Direct
+             Translated P2P on the switch ports beside the passthrough devices,
+             ATS in the ConnectX firmware under them
 ```
 
 Supporting another accelerator is one row in `DEVICES`. Do not add a
@@ -50,7 +53,9 @@ all, so a trait shaped like NVIDIA's would be the wrong abstraction
   on a node that has never run this. libkmod would tie the image to a build
   that understands the host's module compression; the host's own modprobe
   cannot get that wrong. `modules.rs` does what kata-deploy's
-  `install_stage_load_kernel_modules` does, including the `chroot`.
+  `install_stage_load_kernel_modules` does, including the `chroot`. Under
+  `--p2p-rdma` the host's `mlxconfig` or `mstconfig` runs the same way, for
+  the one firmware setting (`ATS_ENABLED`) a ConnectX keeps that this needs.
 
 ## Principles
 
@@ -102,6 +107,11 @@ all, so a trait shaped like NVIDIA's would be the wrong abstraction
   require unbinding first.
 - The mode only becomes active after a reset. Setting without resetting is a
   bug, not an optimisation.
+- With an IOMMU on, the kernel sets the ACS bits that isolate IOMMU groups on
+  every capable port at enumeration. Direct Translated P2P is the one bit it
+  leaves alone; it changes routing, never grouping, so it is safe to set at
+  runtime. A ConnectX exposes ATS only when its firmware setting is on, which
+  applies at the next boot.
 
 ## Building and testing
 

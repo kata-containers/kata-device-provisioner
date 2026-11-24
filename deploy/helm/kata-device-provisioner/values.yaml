@@ -26,6 +26,9 @@
 # Bare YAML 1.1 on/off/yes/no booleans are accepted as on/off.
 #
 # Optional profile fields include:
+#   p2pRdma: false            # the GPUDirect RDMA path: Direct Translated P2P on
+#                             # the switch ports beside the GPUs, ATS in the
+#                             # ConnectX firmware under them
 #   ccModeOverrides: []       # modes requested through ccModeLabel on nodes
 #   ccModeLabel: nvidia.com/cc.mode
 #   ccModeStateLabel: ...     # explicit override of the unique default
