@@ -458,7 +458,9 @@ fn verify(
 }
 
 /// Busy devices block only runs that would change them, so converged nodes can
-/// be upgraded while Kata workloads are running.
+/// be upgraded while Kata workloads are running. The mode stage writes to
+/// every in-scope device, so a pending mode write counts for a device the run
+/// leaves on the host too.
 fn writable(
     sysfs: &Sysfs,
     states: &[DeviceState],
@@ -472,19 +474,18 @@ fn writable(
         .filter(|state| {
             let current = vfio::current_driver(sysfs, &state.address);
 
-            if !passthrough.iter().any(|kept| kept.address == state.address) {
-                return current.is_some_and(|driver| driver.replace('-', "_").contains("vfio"));
-            }
-
-            match drivers.get(&state.address) {
+            let rebinds = match passthrough.iter().any(|kept| kept.address == state.address) {
+                // Released after the bind stage if vfio holds it.
+                false => current.is_some_and(|driver| driver.replace('-', "_").contains("vfio")),
                 // An unknown target cannot prove that the device is converged.
-                None => true,
-                Some(target) if current.as_deref() != Some(target.driver.as_str()) => true,
-                Some(_) => {
-                    unreadable.contains_key(&state.address)
-                        || !nvidia::writes_for(state.cc_mode, state.ppcie_mode, mode).is_empty()
-                }
-            }
+                true => drivers
+                    .get(&state.address)
+                    .is_none_or(|target| current.as_deref() != Some(target.driver.as_str())),
+            };
+
+            rebinds
+                || unreadable.contains_key(&state.address)
+                || !nvidia::writes_for(state.cc_mode, state.ppcie_mode, mode).is_empty()
         })
         .cloned()
         .collect()
@@ -519,7 +520,7 @@ mod tests {
     use crate::device::tests::{
         managed_fabric_node, node, A100, B200, GB200, GB202, GH200, H100, NVSWITCH, RUBIN_C2C,
     };
-    use pcilibs_rs::cc::CcMode;
+    use pcilibs_rs::cc::{CcMode, PpcieMode};
     use pcilibs_rs::testfs::{self, Fake};
     use rstest::{fixture, rstest};
     use std::fs;
@@ -861,6 +862,37 @@ mod tests {
         );
 
         assert_eq!(writable.len(), 1);
+    }
+
+    /// `mode_stage` writes to a switch the run leaves on the host, and the
+    /// reset must not reach a device a VM holds.
+    #[rstest]
+    #[case::ppcie_has_to_be_turned_off(Some(PpcieMode::On), false, true)]
+    #[case::already_off(Some(PpcieMode::Off), false, false)]
+    #[case::mode_unreadable(None, true, true)]
+    fn a_pending_mode_write_makes_a_host_left_device_writable(
+        sysfs: Fake,
+        #[case] ppcie: Option<PpcieMode>,
+        #[case] probe_failed: bool,
+        #[case] writes: bool,
+    ) {
+        let mut states = node(&sysfs, &[NVSWITCH]);
+        states[0].ppcie_mode = ppcie;
+        let unreadable: HashMap<_, _> = probe_failed
+            .then(|| (states[0].address.clone(), "BAR0 unmappable".to_string()))
+            .into_iter()
+            .collect();
+
+        let writable = writable(
+            &sysfs.sysfs,
+            &states,
+            &passthrough_set(&states, Mode::Off),
+            &HashMap::new(),
+            Mode::Off,
+            &unreadable,
+        );
+
+        assert_eq!(!writable.is_empty(), writes);
     }
 
     /// Releasing a held VFIO device can block in the kernel indefinitely.
