@@ -545,7 +545,7 @@ enumeration, and the IOMMU groups follow from those bits. A DGX booted with no
 ACS script has every GPU and NIC in a group of its own. The one bit the guide's
 value adds that the kernel leaves alone is Direct Translated P2P: with it, a
 request the NIC has already translated through ATS is routed across the switch
-to the GPU; without it, the request climbs to the root complex and comes back
+to the GPU; without it, the request goes up to the root complex and back
 down. It is a routing bit, not an isolation bit, so setting it after boot
 changes no group.
 
@@ -575,8 +575,8 @@ and for the VM's when the device is attached. The firmware setting applies at
 the next boot. A ConnectX under the switch whose firmware has it off is
 switched on through the node's own `mlxconfig` or `mstconfig`, under the same
 `chroot` the host's `modprobe` runs in, and the run then fails and says so:
-the setting is in place, the node has to go round once, and a node labelled
-provisioned must not carry the slow path until someone notices. Porting the
+the setting is in place, the node needs one reboot, and a node labelled
+provisioned must not route P2P requests through the root complex unreported. Porting the
 tools' register protocol into `pcilibs-rs` the way the CC mode was ported was
 considered and is out of proportion for one boolean; the host tool is the
 exception the `modprobe` one already is.

@@ -1060,8 +1060,8 @@ mod tests {
         assert_eq!(verify_capable(&states, mode).is_ok(), expected);
     }
 
-    /// The rule that re-sets Direct Translated P2P rides in the same file as
-    /// the driver_override rules, so one uninstall removes both.
+    /// The rule that re-sets Direct Translated P2P is written to the same
+    /// file as the driver_override rules, so one uninstall removes both.
     #[rstest]
     fn persist_carries_the_p2p_rules() {
         let switch = switch();

@@ -6,8 +6,8 @@
 //! GPU and the ConnectX beside it (HGX Shared NVSwitch guide 19.0, sections
 //! 2.6 and 2.7): Direct Translated P2P on the switch ports between them, so
 //! a request the NIC has translated through ATS crosses the switch instead
-//! of climbing to the root complex, and ATS itself, a setting in the NIC's
-//! firmware.
+//! of being routed through the root complex, and ATS itself, a setting in
+//! the NIC's firmware.
 //!
 //! Neither is needed for passthrough to work. The kernel sets the ACS bits
 //! that isolate IOMMU groups on its own, and a NIC without ATS still reaches
@@ -119,8 +119,8 @@ fn is_connectx(sysfs: &Sysfs, address: &str) -> bool {
 /// ATS has to be on in every ConnectX's firmware before the path works, and
 /// firmware applies it at the next boot. So this runs before a GPU is
 /// touched, turns it on where it is off, and refuses the run when the node
-/// has to go round once more: a node labelled provisioned would otherwise
-/// carry the slow path until someone noticed.
+/// needs a reboot first: a node labelled provisioned would otherwise route
+/// P2P requests through the root complex with nothing reporting it.
 pub fn verify_ats(host_root: &Path, sysfs: &Sysfs, plan: &Plan) -> Result<()> {
     let mut pending = Vec::new();
     for nic in &plan.nics {
@@ -228,7 +228,7 @@ pub fn apply_acs(sysfs: &Sysfs, plan: &Plan) -> Result<()> {
     for port in &plan.ports {
         if !port.direct_translated {
             println!(
-                "{}: no Direct Translated P2P capability, requests climb to the root complex",
+                "{}: no Direct Translated P2P capability, requests go through the root complex",
                 port.address
             );
             continue;
@@ -295,7 +295,7 @@ pub fn verify(sysfs: &Sysfs, plan: &Plan) -> Result<()> {
             .with_context(|| format!("{}: ACS capability disappeared", port.address))?;
         if !acs.enabled(ACS_DIRECT_TRANSLATED) {
             bail!(
-                "{}: Direct Translated P2P did not take (ACS control reads {:#06x})",
+                "{}: Direct Translated P2P is not set (ACS control reads {:#06x})",
                 port.address,
                 acs.ctrl
             );
@@ -525,7 +525,7 @@ pub(crate) mod tests {
 
         let err = verify(&switch.sysfs, &plan).unwrap_err().to_string();
         assert!(err.contains("0000:16:00.0"), "{err}");
-        assert!(err.contains("did not take"), "{err}");
+        assert!(err.contains("is not set"), "{err}");
 
         apply_acs(&switch.sysfs, &plan).unwrap();
         verify(&switch.sysfs, &plan).unwrap();

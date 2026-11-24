@@ -56,7 +56,7 @@ path GPUDirect RDMA takes between a GPU and the ConnectX beside it (HGX Shared
 NVSwitch guide 19.0, sections 2.6 and 2.7). The kernel already sets the ACS
 bits that isolate IOMMU groups; the run adds Direct Translated P2P on the
 downstream ports of every switch a passthrough device sits behind, so a request
-the NIC has translated through ATS crosses the switch instead of climbing to
+the NIC has translated through ATS crosses the switch instead of going through
 the root complex, and a udev rule running the node's `setpci` re-adds that one
 bit at boot. ATS is a setting in the NIC's firmware: a ConnectX under those
 ports whose firmware has it off is switched on through the node's `mlxconfig`
