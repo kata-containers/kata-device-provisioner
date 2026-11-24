@@ -28,7 +28,7 @@ pub fn check(sysfs: &Sysfs) -> Result<()> {
 /// another driver is driving, and returns values that cannot be trusted
 /// anyway. Plain `status` reads sysfs only and still answers.
 pub fn check_probeable(sysfs: &Sysfs) -> Result<()> {
-    check_no_conflicting_driver(sysfs)
+    check_no_held_device(sysfs)
 }
 
 fn check_iommu(sysfs: &Sysfs) -> Result<()> {
@@ -48,14 +48,32 @@ fn check_iommu(sysfs: &Sysfs) -> Result<()> {
     Ok(())
 }
 
+/// A loaded driver races `vfio-pci`'s `ids=` for the device at boot, even
+/// when it holds none now.
 fn check_no_conflicting_driver(sysfs: &Sysfs) -> Result<()> {
+    check_no_held_device(sysfs)?;
+
+    for name in CONFLICTING_DRIVERS {
+        if sysfs.driver(name).is_some_and(|dir| dir.is_dir()) {
+            bail!(
+                "the {name} driver is loaded: it must be disabled on a passthrough node. \
+                 Prevent {name} from loading via /etc/modprobe.d, rebuild the initramfs, \
+                 and reboot"
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn check_no_held_device(sysfs: &Sysfs) -> Result<()> {
     for name in CONFLICTING_DRIVERS {
         let held = devices_held_by(sysfs, name);
         if !held.is_empty() {
             bail!(
-                "the {name} driver holds {}: a passthrough node must not run a \
-                 host GPU driver. Blacklist {name} in /etc/modprobe.d, rebuild \
-                 the initramfs, and reboot",
+                "the {name} driver holds {}: it must be disabled on a passthrough node. \
+                 Prevent {name} from loading via /etc/modprobe.d, rebuild the initramfs, \
+                 and reboot",
                 held.join(", ")
             );
         }
@@ -138,10 +156,31 @@ mod tests {
     #[rstest]
     #[case::proprietary("nvidia")]
     #[case::open_source("nouveau")]
-    fn tolerates_a_loaded_host_driver_that_holds_nothing(healthy_node: Fake, #[case] driver: &str) {
+    fn rejects_a_loaded_conflicting_driver_that_holds_nothing(
+        healthy_node: Fake,
+        #[case] driver: &str,
+    ) {
         healthy_node.add_driver(driver);
 
-        check(&healthy_node.sysfs).unwrap();
+        let err = check(&healthy_node.sysfs).unwrap_err().to_string();
+
+        assert!(
+            err.contains(&format!("the {driver} driver is loaded")),
+            "{err}"
+        );
+    }
+
+    /// Reading BAR0 conflicts only with a driver bound to that GPU.
+    #[rstest]
+    #[case::proprietary("nvidia")]
+    #[case::open_source("nouveau")]
+    fn probing_tolerates_a_loaded_conflicting_driver_that_holds_nothing(
+        healthy_node: Fake,
+        #[case] driver: &str,
+    ) {
+        healthy_node.add_driver(driver);
+
+        check_probeable(&healthy_node.sysfs).unwrap();
     }
 
     /// Every loaded driver has one, and it is not a device.
@@ -152,6 +191,6 @@ mod tests {
         std::os::unix::fs::symlink("../../../../module/nouveau", module).unwrap();
 
         assert!(devices_held_by(&healthy_node.sysfs, "nouveau").is_empty());
-        check(&healthy_node.sysfs).unwrap();
+        check_probeable(&healthy_node.sysfs).unwrap();
     }
 }
