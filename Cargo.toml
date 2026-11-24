@@ -21,11 +21,11 @@ libc = "0.2"
 #
 # Topology::fabric names the fabric a Service VM is given, and the testfs
 # ConnectX and IOMMU group fixtures are what the tests build nodes with.
-pcilibs-rs = { git = "https://github.com/kata-containers/pcilibs-rs", rev = "77cf9b5209b24bc71e5b5d612798b0f7f2daf038", features = ["cc"] }
+pcilibs-rs = { git = "https://github.com/kata-containers/pcilibs-rs", rev = "919245c5a730605f323dbee7971221c43998b5d0", features = ["cc"] }
 # The NFD fact is written to a temporary file and renamed into place.
 tempfile = "3"
 
 [dev-dependencies]
 # The fake sysfs trees the library's own tests use.
-pcilibs-rs = { git = "https://github.com/kata-containers/pcilibs-rs", rev = "77cf9b5209b24bc71e5b5d612798b0f7f2daf038", features = ["cc", "testfs"] }
+pcilibs-rs = { git = "https://github.com/kata-containers/pcilibs-rs", rev = "919245c5a730605f323dbee7971221c43998b5d0", features = ["cc", "testfs"] }
 rstest = "0.28.0"

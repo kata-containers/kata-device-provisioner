@@ -98,7 +98,7 @@ spec:
           matchExpressions:
             vendor: { op: In, value: ["10de"] }
             class: { op: In, value: ["0302"] }
-            device: { op: In, value: ["3002", "3041", "307e", "30ff"] }
+            device: { op: In, value: ["3002", "3041", "307e", "307f", "30ff"] }
     # Every device id the catalog knows a coherent variant of, by device id
     # alone, subsystem notwithstanding: the same conservative answer
     # `pcilibs_rs::cc::is_c2c` gives the binary, so the PCIe profiles never
@@ -111,7 +111,7 @@ spec:
           matchExpressions:
             vendor: { op: In, value: ["10de"] }
             class: { op: In, value: ["0302"] }
-            device: { op: In, value: ["2342", "2343", "2345", "2348", "2941", "297e", "29bc", "3041", "307e", "30ff", "31a1", "31c2", "31c3"] }
+            device: { op: In, value: ["2342", "2343", "2345", "2348", "2941", "297e", "29bc", "3041", "307e", "307f", "30ff", "31a1", "31c2", "31c3"] }
     # Coherent Blackwell: GB200 and GB300 superchips, which GBx00 selects.
     - name: "nvidia.grace-blackwell"
       labels:
@@ -182,5 +182,5 @@ spec:
               matchExpressions:
                 vendor: { op: In, value: ["10de"] }
                 class: { op: In, value: ["0302"] }
-                device: { op: In, value: ["3002", "3041", "307e", "30ff"] }
+                device: { op: In, value: ["3002", "3041", "307e", "307f", "30ff"] }
 {{- end }}
