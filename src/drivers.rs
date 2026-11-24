@@ -28,15 +28,19 @@ pub(crate) fn is_vfio(driver: &str) -> bool {
 /// not list nothing establishes that a generic binding works. An NVSwitch has
 /// no variant driver, and upstream's mlx5 variant claims only the SR-IOV VF,
 /// which leaves generic for a management PF.
-fn verify_generic_vfio(state: &DeviceState, module: &str) -> Result<()> {
+fn verify_generic_vfio(alias: &Path, state: &DeviceState) -> Result<()> {
     match state.provisioning() {
         Some(Provisioning::NvidiaInBandPpcie | Provisioning::FabricManagement) => Ok(()),
         Some(Provisioning::NvidiaInBandCc) if cc::is_c2c(state.device_id) => bail!(
-            "{} ({}) is coherently attached over NVLink-C2C and needs a vfio driver that can \
-             map its memory, but this kernel's module alias table offers only {module}, which \
-             cannot. The node needs a kernel whose nvgrace-gpu vfio driver claims this device",
+            "{} ({}) is coherently attached over NVLink-C2C and needs a vfio driver that maps \
+             its memory; {} names no variant driver for {:04x}:{:04x} and generic vfio-pci \
+             cannot map it. The node needs a kernel whose nvgrace-gpu vfio driver claims this \
+             device",
             state.address,
-            state.device_name
+            state.device_name,
+            alias.display(),
+            state.vendor,
+            state.device_id
         ),
         Some(Provisioning::NvidiaInBandCc) if state.cc_capable() => Ok(()),
         Some(Provisioning::NvidiaInBandCc) | None => bail!(
@@ -55,7 +59,7 @@ fn module_for(alias: &Path, state: &DeviceState) -> Result<String> {
         .unwrap_or_else(|| "vfio_pci".to_string());
 
     if !modules::needs_driver_override(&module) {
-        verify_generic_vfio(state, &module)?;
+        verify_generic_vfio(alias, state)?;
     }
     Ok(module)
 }
@@ -293,6 +297,7 @@ pub(crate) mod tests {
     use crate::device::in_scope;
     use crate::device::tests::{
         managed_fabric_node, node, B200, GB200, GB202, GH200, H100, NVSWITCH, RUBIN_C2C,
+        VERA_RUBIN_NVL72,
     };
     use pcilibs_rs::testfs::{self, Fake};
     use rstest::{fixture, rstest};
@@ -376,6 +381,7 @@ pub(crate) mod tests {
     #[case::grace_hopper(GH200)]
     #[case::grace_blackwell(GB200)]
     #[case::coherent_rubin(RUBIN_C2C)]
+    #[case::vera_rubin_nvl72(VERA_RUBIN_NVL72)]
     #[case::ambiguous_attachment((0x29bc, 0x030200))]
     #[case::unknown_gpu((0xffff, 0x030200))]
     fn missing_variant_support_is_not_hidden_by_generic_vfio(
@@ -415,6 +421,7 @@ pub(crate) mod tests {
     #[case::grace_hopper(GH200)]
     #[case::grace_blackwell(GB200)]
     #[case::coherent_rubin(RUBIN_C2C)]
+    #[case::vera_rubin_nvl72(VERA_RUBIN_NVL72)]
     fn a_generic_alias_cannot_replace_a_required_variant(
         sysfs: Fake,
         alias_file: tempfile::NamedTempFile,
@@ -435,6 +442,26 @@ pub(crate) mod tests {
             format!("{err:#}").contains("coherently attached"),
             "{err:#}"
         );
+    }
+
+    /// A kernel without the variant is the operator's problem to fix, so the
+    /// refusal names the table consulted, the id it lacks and the remedy.
+    #[rstest]
+    fn the_refusal_names_the_kernel_table_and_the_remedy(
+        sysfs: Fake,
+        alias_file: tempfile::NamedTempFile,
+    ) {
+        let states = node(&sysfs, &[VERA_RUBIN_NVL72]);
+
+        let err = format!(
+            "{:#}",
+            module_for(alias_file.path(), &states[0]).unwrap_err()
+        );
+
+        assert!(err.contains("coherently attached"), "{err}");
+        assert!(err.contains("10de:307f"), "{err}");
+        assert!(err.contains(alias_file.path().to_str().unwrap()), "{err}");
+        assert!(err.contains("nvgrace-gpu"), "{err}");
     }
 
     #[rstest]
