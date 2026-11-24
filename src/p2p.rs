@@ -1,4 +1,4 @@
-// Copyright (c) 2026 Kata Containers contributors
+// Copyright (c) Kata Containers contributors
 //
 // SPDX-License-Identifier: Apache-2.0
 
@@ -82,7 +82,9 @@ pub fn plan(sysfs: &Sysfs, passthrough: &[DeviceState]) -> Result<Plan> {
     let mut ports = Vec::new();
     let mut nics = BTreeSet::new();
     for address in addresses {
-        let dir = sysfs.device(&address).expect("a switch port address");
+        let dir = sysfs
+            .device(&address)
+            .with_context(|| format!("{address}: not a PCI address"))?;
         let acs = Config::open(sysfs, &address)?
             .acs()?
             .with_context(|| format!("{address}: ACS capability disappeared"))?;
