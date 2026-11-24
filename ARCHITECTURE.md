@@ -49,7 +49,7 @@ boundary in the middle of the set-and-reset pair, which has to be atomic.
 
 | Stage | What it does |
 | --- | --- |
-| `host-check` | Refuse a node that cannot do passthrough at all: no IOMMU groups in sysfs, or an NVIDIA host driver holding a GPU. Neither is fixable from a pod without a reboot, so they fail early and loudly. It says nothing about vfio drivers, since which one a device needs is `resolve-drivers`' answer |
+| `host-check` | Refuse a node that cannot do passthrough at all: no IOMMU groups in sysfs, or a loaded NVIDIA host driver. Neither is fixable from a pod without a reboot, so they fail early and loudly. It says nothing about vfio drivers, since which one a device needs is `resolve-drivers`' answer |
 | `discover` | Enumerate devices from sysfs, classify against the `DEVICES` table (`pcilibs-rs`), read current driver and CC mode |
 | `verify-idle` | Refuse to touch a device anything holds open, found by scanning `/proc/*/fd` for the device's `/dev/vfio` group node or cdev. Every device is checked before any device is touched, so a busy node is refused whole rather than half-transitioned |
 | `resolve-drivers` | Per device, read its vfio module out of the running kernel's `modules.alias`, load it, and resolve the driver name it registers. Before anything is mutated: a node whose kernel has no driver for one of its GPUs must be refused before a GPU is reset, not after |
