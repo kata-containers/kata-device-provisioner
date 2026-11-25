@@ -1,0 +1,36 @@
+# HGX Rx00: Rubin SXM boards bound for passthrough, confidential computing
+# left off.
+#
+# Selects Rubin HGX nodes by GPU identity plus a managed-fabric candidate: as
+# on Bx00, the NVSwitches are reached through management ConnectX PFs, which
+# the Job qualifies by VPD role. Coherent Rubin variants are taken too, since on
+# Rubin attachment does not decide whether CC can be enabled; CPU type never
+# selects. Each GPU and the whole fabric is bound to vfio-pci, the fabric for a
+# ServiceVM.
+#
+# Whether a GPU shares its IOMMU group with the data-path PFs behind the same
+# ConnectX-9 switch depends on the kernel; where it does, they must leave
+# mlx5_core first or the Job refuses the group.
+#
+#   helm install kata-device-provisioner deploy/helm/kata-device-provisioner \
+#     --namespace kata-system --create-namespace \
+#     -f deploy/helm/kata-device-provisioner/profiles/HGX-Rx00.values.yaml
+
+profiles:
+  HGX-Rx00:
+    enabled: true
+    bindFabric: true
+    ccMode: "off"
+
+    nodeFeatureRule:
+      enabled: true
+
+    nodeSelector:
+      kata.feature.node.kubernetes.io/nvidia-rubin: "true"
+      kata.feature.node.kubernetes.io/nvidia-managed-fabric-candidate: "true"
+
+    job:
+      # A mode change resets the GPUs, so this paces how much of the fleet loses
+      # accelerators at once. Raise it once you trust the rollout.
+      parallelism: 2
+      activeDeadlineSeconds: 3600

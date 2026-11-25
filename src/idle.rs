@@ -78,8 +78,8 @@ pub fn holders(
 fn vfio_nodes(dev_vfio: &Path, sysfs: &Sysfs, state: &DeviceState) -> Vec<PathBuf> {
     let mut nodes = Vec::new();
 
-    if state.iommu_group >= 0 {
-        nodes.push(dev_vfio.join(state.iommu_group.to_string()));
+    if let Some(group) = state.iommu_group {
+        nodes.push(dev_vfio.join(group.to_string()));
     }
 
     let cdevs = sysfs
@@ -119,6 +119,7 @@ mod tests {
         fn state(&self) -> DeviceState {
             discover(&self.fake.sysfs)
                 .unwrap()
+                .devices
                 .into_iter()
                 .find(|state| state.address == "0000:65:00.0")
                 .unwrap()
