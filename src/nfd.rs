@@ -7,12 +7,9 @@
 //! NFD's `local` source reads it.
 
 use std::fs;
-use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use tempfile::NamedTempFile;
 
 use crate::modules;
 
@@ -39,31 +36,16 @@ pub fn publish(host_root: &Path) -> Result<()> {
         return Ok(());
     }
 
-    let directory = host_root.join(DIRECTORY);
-    fs::create_dir_all(&directory)
-        .with_context(|| format!("create NFD directory {}", directory.display()))?;
     // The temporary name starts with a dot, which NFD skips, so NFD never
-    // reads a partial file. It is removed on drop if any step below fails.
-    let mut temporary = NamedTempFile::new_in(&directory)
-        .with_context(|| format!("create a temporary file in {}", directory.display()))?;
-    (|| -> Result<()> {
-        temporary.write_all(FABRIC.as_bytes())?;
-        // NFD's worker is not root and has to read the file.
-        temporary
-            .as_file()
-            .set_permissions(fs::Permissions::from_mode(0o644))?;
-        temporary.as_file().sync_all()?;
-        temporary.persist(&path)?;
-        Ok(())
-    })()
-    .context("publish verified NFD fabric fact")
+    // reads a partial file. The mode is 0644: NFD's worker is not root.
+    modules::write(&path, FABRIC).context("publish verified NFD fabric fact")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use rstest::{fixture, rstest};
-    use std::os::unix::fs::symlink;
+    use std::os::unix::fs::{symlink, PermissionsExt};
     use tempfile::TempDir;
 
     #[fixture]
