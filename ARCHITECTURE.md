@@ -432,9 +432,10 @@ built with `CONFIG_IOMMUFD_VFIO_CONTAINER` have no such module.
 
 `ids=` is `vfio-pci`'s own parameter for the `new_id` mechanism: the driver
 registers a dynamic PCI match for each id as the module loads, and the devices
-are its own from that moment. So the binding is re-established by the module
-load itself, before userspace has started, with no service, no unit ordering, no
-binary installed on the host and nothing for an operator to debug when it works.
+are its own from that moment. So for the devices `ids=` claims, the binding is
+re-established by the module load itself, before userspace has started, with no
+service, no unit ordering, no binary installed on the host and nothing for an
+operator to debug when it works.
 
 This is only sound because the NVIDIA host driver is absent, which `host-check`
 enforces: `ids=` claims a device that nothing else wanted, rather than racing a
@@ -502,22 +503,26 @@ mechanism for exactly this:
 ACTION=="add", SUBSYSTEM=="pci", ATTR{vendor}=="0x10de", ATTR{device}=="0x2342",
   ATTR{driver_override}="nvgrace_gpu_vfio_pci",
   RUN{builtin}+="kmod load nvgrace_gpu_vfio_pci",
-  RUN+="/bin/sh -c 'echo %k > /sys/bus/pci/drivers_probe'"
+  RUN+="/etc/kata-device-provisioner/kata-device-provisioner probe %k"
 ```
 
 Every clause is load-bearing. Writing `driver_override` neither loads the named
 driver nor triggers a probe, so the rule has to do both itself, and `kmod load`
 alone does not suffice: if the module is already resident when the event
 arrives, loading it attaches nothing, which leaves the explicit `drivers_probe`
-doing the real work. The match is on the device ids rather than the address, so
-two identical cards share one rule and a card that moves slot still gets
-claimed.
+doing the real work. That write is made by the `probe` subcommand of this
+binary, a copy of which `persist` installs beside the rules: udev runs the
+events of a tray's devices in parallel, so the write is made under a lock and
+repeated until the device has a driver, and `src/probe.rs` gives the reasons.
+The match is on the device ids rather than the address, so two identical cards
+share one rule and a card that moves slot still gets claimed.
 
 `driver_override` is matched against the *driver* name while `kmod load` takes
 the *module* name; the rule is generated from both, resolved separately.
 
-This was confirmed across a cold boot on a GH200: the GPU came back bound to
-`nvgrace_gpu_vfio_pci` with the override in place, from the rule alone.
+This was confirmed across a cold boot on a GH200 with the earlier `sh -c` probe:
+the GPU came back bound to `nvgrace_gpu_vfio_pci` with the override in place,
+from the rule alone. The `probe` subcommand has not been through a boot yet.
 
 #### Which module a device needs is the kernel's answer, not ours
 
@@ -591,9 +596,9 @@ is reached through management PFs cannot take PPCIE at all.
 - **A systemd oneshot running this binary at boot**, with a kubelet drop-in that
   `Requires=` it so a node that cannot bind never goes `Ready`. It bought a real
   property — a bind failure became a visible node failure instead of a green
-  node advertising GPUs it does not have — at the cost of a binary installed on
-  the host, a unit, a drop-in, and detecting "the kubelet unit" across kubeadm,
-  k3s, RKE2, k0s and MicroK8s, none of which agree on its name. It also inverted
+  node advertising GPUs it does not have — at the cost of a unit, a drop-in,
+  and detecting "the kubelet unit" across kubeadm, k3s, RKE2, k0s and MicroK8s,
+  none of which agree on its name. It also inverted
   the blast radius: a GPU problem became a whole-node outage. Against a
   mechanism with no code running at boot, there is much less left to fail, and
   the residual failure — a node that comes back with unbound GPUs — shows up as

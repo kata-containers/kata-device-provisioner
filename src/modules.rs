@@ -80,6 +80,10 @@ pub fn modprobe(host_root: &Path, module: &str) -> Result<()> {
 const MODULES_LOAD: &str = "etc/modules-load.d/kata-device-provisioner.conf";
 const MODPROBE: &str = "etc/modprobe.d/kata-device-provisioner.conf";
 const UDEV_RULES: &str = "etc/udev/rules.d/71-kata-device-provisioner.rules";
+/// The program the udev rules run: a copy of this binary, run as `probe`. It
+/// is in `/etc` beside the rules because that is on the root filesystem when
+/// udev replays the add events, and writable on a node whose `/usr` is not.
+const PROBE: &str = "etc/kata-device-provisioner/kata-device-provisioner";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Scope {
@@ -130,7 +134,7 @@ fn udev_rule(selector: &str, module: &str, driver: &str) -> String {
 fn load_and_probe(module: &str) -> String {
     format!(
         "RUN{{builtin}}+=\"kmod load {module}\", \
-         RUN+=\"/bin/sh -c 'echo %k > /sys/bus/pci/drivers_probe'\""
+         RUN+=\"/{PROBE} probe %k\""
     )
 }
 
@@ -214,20 +218,38 @@ pub fn persist(host_root: &Path, claims: &[Claim]) -> Result<Vec<String>> {
     write(&host_root.join(MODPROBE), &options)?;
 
     let rules_path = host_root.join(UDEV_RULES);
+    let probe_path = host_root.join(PROBE);
     match rules.is_empty() {
-        true => remove(&rules_path)?,
-        false => write(&rules_path, &rules.concat())?,
+        true => {
+            remove(&rules_path)?;
+            remove(&probe_path)?;
+        }
+        false => {
+            // Before the rules, so no rule names a program that is not there.
+            install_probe(&probe_path)?;
+            write(&rules_path, &rules.concat())?;
+        }
     }
 
     Ok(overridden)
 }
 
 pub fn unpersist(host_root: &Path) -> Result<()> {
-    for path in [MODULES_LOAD, MODPROBE, UDEV_RULES] {
+    for path in [MODULES_LOAD, MODPROBE, UDEV_RULES, PROBE] {
         remove(&host_root.join(path))?;
     }
 
     Ok(())
+}
+
+/// The rules run on the host, outside this container, so the binary is copied
+/// there. The image's binary is statically linked, which is what lets the copy
+/// run against any host userspace, the initramfs included.
+fn install_probe(path: &Path) -> Result<()> {
+    let exe = std::env::current_exe().context("find the running executable")?;
+    let binary = fs::read(&exe).with_context(|| format!("read {}", exe.display()))?;
+
+    write_with_mode(path, &binary, 0o755)
 }
 
 pub(crate) fn remove(path: &Path) -> Result<()> {
@@ -451,15 +473,58 @@ mod tests {
             rules.contains(r#"ATTR{driver_override}="nvgrace_gpu_vfio_pci""#),
             "{rules}"
         );
-        assert!(rules.contains("drivers_probe"), "{rules}");
+        assert!(
+            rules.contains("/etc/kata-device-provisioner/kata-device-provisioner probe %k"),
+            "{rules}"
+        );
         assert!(
             !rules.contains("0x2330"),
             "vfio-pci needs no rule, modprobe.d claims it: {rules}"
         );
     }
 
-    /// Pinned verbatim: this rule was validated on a GH200, so changing it
-    /// means re-testing on hardware.
+    /// The rules run this binary on the host, so `persist` puts a copy there
+    /// with them, replaces a stale one whole, and leaves nothing else behind.
+    #[rstest]
+    fn installs_the_running_binary_for_the_rules_to_run(host: TempDir) {
+        let devices = [claim("0009:01:00.0", 0x2342, "nvgrace_gpu_vfio_pci")];
+        let probe = host.path().join(PROBE);
+        persist(host.path(), &devices).unwrap();
+        fs::write(&probe, "stale").unwrap();
+
+        persist(host.path(), &devices).unwrap();
+
+        assert_eq!(
+            fs::read(&probe).unwrap(),
+            fs::read(std::env::current_exe().unwrap()).unwrap()
+        );
+        assert_eq!(
+            fs::metadata(&probe).unwrap().permissions().mode() & 0o777,
+            0o755,
+            "udev runs the file directly"
+        );
+        assert_eq!(fs::read_dir(probe.parent().unwrap()).unwrap().count(), 1);
+    }
+
+    /// `ids=` in modprobe.d claims the device, no rule is written, and a
+    /// binary left by an earlier run goes with the rules.
+    #[rstest]
+    fn a_node_without_rules_gets_no_binary(host: TempDir) {
+        persist(
+            host.path(),
+            &[claim("0009:01:00.0", 0x2342, "nvgrace_gpu_vfio_pci")],
+        )
+        .unwrap();
+
+        persist(host.path(), &[claim("0000:65:00.0", 0x2330, "vfio_pci")]).unwrap();
+
+        assert!(!host.path().join(UDEV_RULES).exists());
+        assert!(!host.path().join(PROBE).exists());
+    }
+
+    /// Pinned verbatim. The match, override and load clauses were validated on
+    /// a GH200; the RUN program has run only in the tests of `probe.rs`.
+    /// Changing any clause means re-testing on hardware.
     #[rstest]
     fn the_rule_is_the_one_that_was_validated() {
         assert_eq!(
@@ -471,7 +536,7 @@ mod tests {
             "ACTION==\"add\", SUBSYSTEM==\"pci\", ATTR{vendor}==\"0x10de\", \
              ATTR{device}==\"0x2342\", ATTR{driver_override}=\"nvgrace_gpu_vfio_pci\", \
              RUN{builtin}+=\"kmod load nvgrace_gpu_vfio_pci\", \
-             RUN+=\"/bin/sh -c 'echo %k > /sys/bus/pci/drivers_probe'\"\n"
+             RUN+=\"/etc/kata-device-provisioner/kata-device-provisioner probe %k\"\n"
         );
     }
 
@@ -531,8 +596,11 @@ mod tests {
     }
 
     #[rstest]
-    fn uninstall_removes_both_files_and_is_idempotent(host: TempDir) {
-        let devices = [claim("0000:65:00.0", 0x2330, "vfio_pci")];
+    fn uninstall_removes_every_boot_file_and_is_idempotent(host: TempDir) {
+        let devices = [
+            claim("0000:65:00.0", 0x2330, "vfio_pci"),
+            claim("0009:01:00.0", 0x2342, "nvgrace_gpu_vfio_pci"),
+        ];
         persist(host.path(), &devices).unwrap();
 
         unpersist(host.path()).unwrap();
@@ -540,6 +608,8 @@ mod tests {
 
         assert!(!host.path().join(MODULES_LOAD).exists());
         assert!(!host.path().join(MODPROBE).exists());
+        assert!(!host.path().join(UDEV_RULES).exists());
+        assert!(!host.path().join(PROBE).exists());
     }
     /// The address narrows the match; the ids stay, so a function that moves
     /// slot is not claimed by whatever lands at its old address.
@@ -581,7 +651,9 @@ mod tests {
             assert!(line.contains("ATTR{vendor}==\"0x15b3\""));
             assert!(line.contains("ATTR{device}==\"0x1021\""));
             assert!(line.contains(&format!("kmod load {module}")));
-            assert!(line.contains("drivers_probe"));
+            assert!(line.contains(
+                "RUN+=\"/etc/kata-device-provisioner/kata-device-provisioner probe %k\""
+            ));
             if index % 2 == 0 {
                 assert!(line.starts_with("ACTION==\"add|bind\""), "{line}");
                 assert!(line.contains("ATTR{driver/unbind}"));

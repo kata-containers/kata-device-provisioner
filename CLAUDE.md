@@ -17,7 +17,7 @@ job, which means the per-node Job carries no ServiceAccount token.
 
 ```text
 src/
-  main.rs    CLI (status / apply / uninstall) and stage order
+  main.rs    CLI (status / apply / uninstall / probe) and stage order
   device.rs  vendor-neutral discovery + the DEVICES table (PCI identity ->
              provisioning kind + label scheme) -> one DeviceState per device,
              plus the NVSwitch fabric pcilibs-rs names on the node
@@ -33,6 +33,8 @@ src/
   node_feature_rule.rs test-only: renders the chart's NodeFeatureRule from
              DEVICES and the pcilibs-rs catalog; fails while the template is stale
   nvidia.rs  NVIDIA in-band CC mode, reached only via Provisioning::NvidiaInBandCc
+  probe.rs   what the udev rules run at boot: one drivers_probe write at a
+             time, repeated until the device has a driver
 ```
 
 Supporting another accelerator is one row in `DEVICES`. Do not add a

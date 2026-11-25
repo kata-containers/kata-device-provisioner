@@ -39,6 +39,7 @@ waiting for a reboot:
 /etc/modules-load.d/kata-device-provisioner.conf   vfio-pci
 /etc/modprobe.d/kata-device-provisioner.conf       options vfio-pci ids=10de:2330,10de:22a3
 /etc/udev/rules.d/71-kata-device-provisioner.rules for anything needing driver_override
+/etc/kata-device-provisioner/kata-device-provisioner this binary, which those rules run as `probe`
 ```
 
 That is the whole mechanism. No service runs at boot and nothing is ordered
