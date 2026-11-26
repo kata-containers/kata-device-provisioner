@@ -13,6 +13,7 @@ mod nfd;
 #[cfg(test)]
 mod node_feature_rule;
 mod nvidia;
+mod probe;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -99,6 +100,17 @@ enum Command {
         #[command(flatten)]
         roots: Roots,
     },
+
+    /// Bind one device to the driver its `driver_override` names. The udev
+    /// rules `apply` writes run this at boot; it is not an operator command.
+    #[command(hide = true)]
+    Probe {
+        /// The device's PCI address, udev's `%k`.
+        address: String,
+
+        #[command(flatten)]
+        roots: Roots,
+    },
 }
 
 fn main() -> Result<()> {
@@ -110,6 +122,13 @@ fn main() -> Result<()> {
             roots,
         } => apply(mode, bind_fabric, &roots),
         Command::Uninstall { roots } => uninstall(&roots),
+        Command::Probe { address, roots } => probe::run(
+            &roots.sysfs(),
+            &address,
+            &roots.host_root.join(probe::LOCK),
+            probe::DEADLINE,
+            probe::INTERVAL,
+        ),
     }
 }
 

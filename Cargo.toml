@@ -22,7 +22,8 @@ libc = "0.2"
 # Topology::fabric names the fabric a Service VM is given, and the testfs
 # ConnectX and IOMMU group fixtures are what the tests build nodes with.
 pcilibs-rs = { git = "https://github.com/kata-containers/pcilibs-rs", rev = "919245c5a730605f323dbee7971221c43998b5d0", features = ["cc"] }
-# The NFD fact is written to a temporary file and renamed into place.
+# The boot files and the NFD fact are written to a temporary file and renamed
+# into place.
 tempfile = "3"
 
 [dev-dependencies]
